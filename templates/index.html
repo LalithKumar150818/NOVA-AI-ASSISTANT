@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nova AI Assistant</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=4) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=7) }}">
 </head>
 <body>
   <div class="app-shell">
@@ -48,13 +48,34 @@
           <input id="fileInput" type="file" accept=".txt,.pdf,.docx" hidden>
           <button id="uploadBtn" class="icon-btn" title="Upload TXT, PDF, or DOCX" aria-label="Upload file">＋</button>
           <textarea id="messageInput" rows="1" placeholder="Message Nova..." aria-label="Message Nova"></textarea>
-          <button id="voiceBtn" class="icon-btn voice-btn" title="Voice input" aria-label="Voice input">♩</button>
+          <button id="cameraBtn" class="icon-btn camera-btn" title="Take a photo for Gemini to analyze" aria-label="Take a photo for Gemini">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.5"/></svg>
+          </button>
+          <button id="voiceBtn" class="icon-btn voice-btn" title="Voice input" aria-label="Voice input">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 18v3m-4 0h8"/></svg>
+          </button>
           <button id="sendBtn" class="send-btn" title="Send message" aria-label="Send message">↑</button>
         </div>
-        <div class="composer-hint">Nova can make mistakes. Check important information. Uploaded document text is sent to Groq when you ask a question.</div>
+        <div class="composer-hint">Nova can make mistakes. Check important information. Photos are sent to Gemini for analysis; uploaded document text is sent to Groq.</div>
       </div>
     </main>
   </div>
-  <script src="{{ url_for('static', filename='app.js', v=4) }}"></script>
+  <dialog id="cameraDialog" class="camera-dialog" aria-labelledby="cameraTitle">
+    <div class="camera-panel">
+      <div class="camera-header">
+        <h2 id="cameraTitle">Take a photo</h2>
+        <button id="closeCameraBtn" class="camera-close" type="button" aria-label="Close camera">×</button>
+      </div>
+      <video id="cameraPreview" autoplay playsinline muted aria-label="Camera preview"></video>
+      <label class="camera-prompt-label" for="photoPrompt">What should Gemini look for?</label>
+      <input id="photoPrompt" class="camera-prompt" type="text" maxlength="2000" value="Describe what is in this photo." autocomplete="off">
+      <div class="camera-actions">
+        <button id="cancelCameraBtn" class="camera-cancel" type="button">Cancel</button>
+        <button id="capturePhotoBtn" class="camera-capture" type="button">Capture and ask Gemini</button>
+      </div>
+      <p class="camera-note">Your camera stays on only while this window is open. The captured photo is sent to Gemini.</p>
+    </div>
+  </dialog>
+  <script src="{{ url_for('static', filename='app.js', v=6) }}"></script>
 </body>
 </html>

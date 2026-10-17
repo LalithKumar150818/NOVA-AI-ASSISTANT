@@ -162,6 +162,7 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .messages { display: flex; flex-direction: column; gap: 25px; width: min(790px, 100%); }
 .message { display: flex; align-items: flex-start; gap: 12px; line-height: 1.75; font-size: 14px; }
+.message.user { justify-content: flex-end; }
 .avatar {
   width: 30px;
   height: 30px;
@@ -172,9 +173,9 @@ button { -webkit-tap-highlight-color: transparent; }
   font-size: 14px;
   font-weight: 700;
 }
-.message.user .avatar { color: #6456d9; background: #eae7ff; }
+.message.user .avatar { order: 2; color: #6456d9; background: #eae7ff; }
 .message.assistant .avatar { color: white; background: linear-gradient(135deg, #7162f0, #a58dff); }
-.message-content { min-width: 0; flex: 1; padding: 2px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.message-content { min-width: 0; flex: 1; padding: 2px 0; overflow-wrap: anywhere; }
 .message.user .message-content {
   flex: initial;
   max-width: 88%;
@@ -184,6 +185,37 @@ button { -webkit-tap-highlight-color: transparent; }
   white-space: pre-wrap;
 }
 .message.assistant .message-content { color: #333547; }
+.message.assistant .message-content > :first-child { margin-top: 0; }
+.message.assistant .message-content > :last-child { margin-bottom: 0; }
+.message.assistant .message-content p { margin: 0 0 12px; line-height: 1.75; }
+.message.assistant .message-content h1,
+.message.assistant .message-content h2,
+.message.assistant .message-content h3,
+.message.assistant .message-content h4,
+.message.assistant .message-content h5,
+.message.assistant .message-content h6 {
+  margin: 20px 0 8px;
+  color: #27293a;
+  font: 700 1.08em/1.4 Manrope, sans-serif;
+}
+.message.assistant .message-content h1 { font-size: 1.35em; }
+.message.assistant .message-content h2 { font-size: 1.2em; }
+.message.assistant .message-content ul,
+.message.assistant .message-content ol { margin: 4px 0 14px; padding-left: 24px; }
+.message.assistant .message-content li { margin: 4px 0; padding-left: 3px; line-height: 1.65; }
+.message.assistant .message-content strong { color: #292b3c; font-weight: 700; }
+.message.assistant .message-content blockquote { margin: 10px 0 14px; padding: 2px 0 2px 14px; color: #666a7d; border-left: 3px solid #c9c2ff; }
+.message.assistant .message-content blockquote p { margin: 0; }
+.message.assistant .message-content code { padding: 2px 5px; color: #5446b3; background: #f0eff9; border-radius: 5px; font: .9em/1.5 Consolas, "Courier New", monospace; }
+.message.assistant .message-content pre { max-width: 100%; margin: 10px 0 14px; padding: 14px 16px; overflow-x: auto; color: #eef0f8; background: #232536; border: 1px solid #34364c; border-radius: 12px; }
+.message.assistant .message-content pre code { padding: 0; color: inherit; background: transparent; border-radius: 0; font-size: 12px; line-height: 1.65; white-space: pre; }
+.message.assistant .message-content .table-wrap { max-width: 100%; margin: 10px 0 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.message.assistant .message-content table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+.message.assistant .message-content th,
+.message.assistant .message-content td { min-width: 100px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.message.assistant .message-content th { color: #34364a; background: #f4f4fa; font-weight: 700; }
+.message.assistant .message-content tr:last-child td { border-bottom: 0; }
+.message.assistant .message-content hr { margin: 16px 0; border: 0; border-top: 1px solid var(--line); }
 .message.error .message-content { color: #bd4242; }
 .message.loading .message-content { color: #9295a5; animation: breathe 1.3s ease-in-out infinite alternate; }
 
@@ -226,7 +258,7 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 .icon-btn { color: #74758a; background: #f5f5fa; }
 .icon-btn:hover { color: #6759dc; background: #ece9ff; }
-.voice-btn { font-size: 20px; }
+.icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .voice-btn.recording { color: #c33; background: #ffe7e8; animation: pulse 1.2s infinite; }
 .send-btn { color: white; background: #6859e8; font-size: 23px; font-weight: 600; }
 .send-btn:hover { background: #5647d5; }
@@ -235,6 +267,29 @@ button { -webkit-tap-highlight-color: transparent; }
 .file-status { width: min(790px, 100%); margin-bottom: 8px; padding: 8px 12px; color: #6257c7; background: #eeedff; border-radius: 10px; font-size: 12px; }
 .file-status.is-error { color: #b33; background: #fff0f0; }
 .file-status[hidden] { display: none; }
+
+.camera-dialog {
+  width: min(560px, calc(100% - 28px));
+  max-width: none;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+}
+.camera-dialog::backdrop { background: #17182acc; backdrop-filter: blur(3px); }
+.camera-panel { padding: 20px; background: white; border-radius: 18px; box-shadow: var(--shadow); }
+.camera-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.camera-header h2 { margin: 0; font: 700 18px Manrope, sans-serif; }
+.camera-close { width: 32px; height: 32px; color: #6e7181; background: #f5f5fa; border: 0; border-radius: 9px; font-size: 22px; cursor: pointer; }
+.camera-dialog video { display: block; width: 100%; max-height: 55vh; background: #16171c; border-radius: 12px; object-fit: contain; }
+.camera-prompt-label { display: block; margin: 14px 0 6px; font-size: 12px; font-weight: 600; }
+.camera-prompt { width: 100%; padding: 10px 11px; color: var(--ink); background: white; border: 1px solid var(--line); border-radius: 9px; font: inherit; font-size: 13px; }
+.camera-prompt:focus { outline: 2px solid #c9c2ff; }
+.camera-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 15px; }
+.camera-actions button { padding: 9px 12px; border: 0; border-radius: 9px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.camera-cancel { color: #65687a; background: #f1f1f6; }
+.camera-capture { color: white; background: #6859e8; }
+.camera-note { margin: 12px 0 0; color: #9295a5; font-size: 11px; line-height: 1.5; }
 
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px #ffdddd; } }
 @keyframes breathe { to { opacity: .55; } }

@@ -6,6 +6,10 @@ const sendBtn = document.getElementById("sendBtn");
 const fileInput = document.getElementById("fileInput");
 const fileStatus = document.getElementById("fileStatus");
 const voiceBtn = document.getElementById("voiceBtn");
+const cameraBtn = document.getElementById("cameraBtn");
+const cameraDialog = document.getElementById("cameraDialog");
+const cameraPreview = document.getElementById("cameraPreview");
+const capturePhotoBtn = document.getElementById("capturePhotoBtn");
 const historyList = document.getElementById("chatHistory");
 const STORAGE_KEY = "nova-ai-chats-v1";
 const MAX_SAVED_CHATS = 30;
@@ -70,6 +74,171 @@ function renderHistory() {
   }
 }
 
+function escapeHTML(text) {
+  return text.replace(/[&<>"']/g, character => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+
+function renderInlineMarkdown(text) {
+  const tokenPattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
+  return text.split(tokenPattern).map(token => {
+    if (token.startsWith("`") && token.endsWith("`")) {
+      return `<code>${escapeHTML(token.slice(1, -1))}</code>`;
+    }
+    if ((token.startsWith("**") && token.endsWith("**")) ||
+        (token.startsWith("__") && token.endsWith("__"))) {
+      return `<strong>${escapeHTML(token.slice(2, -2))}</strong>`;
+    }
+    if ((token.startsWith("*") && token.endsWith("*")) ||
+        (token.startsWith("_") && token.endsWith("_"))) {
+      return `<em>${escapeHTML(token.slice(1, -1))}</em>`;
+    }
+    return escapeHTML(token);
+  }).join("");
+}
+
+function stripWrappingQuotes(text) {
+  const trimmed = text.trim();
+  const quotePairs = [["\"", "\""], ["'", "'"], ["“", "”"], ["‘", "’"]];
+  for (const [opening, closing] of quotePairs) {
+    if (trimmed.startsWith(opening) && trimmed.endsWith(closing) && trimmed.length > 2) {
+      return trimmed.slice(1, -1).trim();
+    }
+  }
+  return text;
+}
+
+function parseTableCells(line) {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+  const withoutOuterPipes = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  return withoutOuterPipes.split("|").map(cell => cell.trim());
+}
+
+function isTableSeparator(cells) {
+  return cells && cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function renderMarkdown(text) {
+  const lines = stripWrappingQuotes(text).replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let index = 0;
+
+  function flushParagraph() {
+    if (paragraph.length) {
+      blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+      paragraph = [];
+    }
+  }
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const tableHeader = parseTableCells(line);
+    const tableSeparator = index + 1 < lines.length ? parseTableCells(lines[index + 1]) : null;
+    if (tableHeader && isTableSeparator(tableSeparator) && tableHeader.length === tableSeparator.length) {
+      flushParagraph();
+      const rows = [];
+      index += 2;
+      while (index < lines.length) {
+        const cells = parseTableCells(lines[index]);
+        if (!cells) break;
+        rows.push(cells);
+        index += 1;
+      }
+      const headerCells = tableHeader.map(cell => `<th scope="col">${renderInlineMarkdown(cell)}</th>`).join("");
+      const bodyRows = rows.map(row => {
+        const cells = tableHeader.map((_, cellIndex) =>
+          `<td>${renderInlineMarkdown(row[cellIndex] || "")}</td>`
+        ).join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+      blocks.push(`<div class="table-wrap"><table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>`);
+      continue;
+    }
+
+    if (tableHeader && isTableSeparator(tableHeader)) {
+      flushParagraph();
+      index += 1;
+      continue;
+    }
+
+    const fence = line.match(/^\s*```([\w+-]*)\s*$/);
+    if (fence) {
+      flushParagraph();
+      index += 1;
+      const codeLines = [];
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const languageClass = fence[1] ? ` class="language-${escapeHTML(fence[1])}"` : "";
+      blocks.push(`<pre><code${languageClass}>${escapeHTML(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    const listItem = line.match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      const ordered = /^\d/.test(listItem[1]);
+      const tag = ordered ? "ol" : "ul";
+      const items = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
+        if (!item || /^\d/.test(item[1]) !== ordered) break;
+        items.push(`<li>${renderInlineMarkdown(item[2])}</li>`);
+        index += 1;
+      }
+      blocks.push(`<${tag}>${items.join("")}</${tag}>`);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      flushParagraph();
+      const quoteLines = [];
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(`<blockquote><p>${renderInlineMarkdown(quoteLines.join(" "))}</p></blockquote>`);
+      continue;
+    }
+
+    if (/^\s*(?:-{3,}|_{3,}|\*{3,})\s*$/.test(line)) {
+      flushParagraph();
+      blocks.push("<hr>");
+      index += 1;
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      index += 1;
+      continue;
+    }
+
+    paragraph.push(line.trim());
+    index += 1;
+  }
+  flushParagraph();
+  return blocks.join("");
+}
+
 function makeMessageElement(role, text, isError = false) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
@@ -79,7 +248,11 @@ function makeMessageElement(role, text, isError = false) {
   avatar.textContent = role === "user" ? "Y" : "✦";
   const content = document.createElement("div");
   content.className = "message-content";
-  content.textContent = text;
+  if (role === "assistant" && !isError && !row.classList.contains("loading")) {
+    content.innerHTML = renderMarkdown(text);
+  } else {
+    content.textContent = text;
+  }
   row.append(avatar, content);
   return row;
 }
@@ -153,7 +326,7 @@ async function sendMessage(textOverride) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Something went wrong.");
     const answer = typeof data.answer === "string" && data.answer.trim()
-      ? data.answer.trim()
+      ? stripWrappingQuotes(data.answer)
       : "I couldn't generate a response. Please try again.";
     chat.messages.push({role: "assistant", content: answer});
     chat.updatedAt = Date.now();
@@ -186,6 +359,126 @@ document.querySelectorAll(".suggestion").forEach(button => {
 document.getElementById("newChatBtn").addEventListener("click", startNewChat);
 document.getElementById("mobileNewChatBtn").addEventListener("click", startNewChat);
 document.getElementById("uploadBtn").addEventListener("click", () => fileInput.click());
+
+let cameraStream = null;
+let cameraRequestId = 0;
+
+function stopCamera() {
+  cameraRequestId += 1;
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  cameraPreview.srcObject = null;
+}
+
+cameraDialog.addEventListener("close", stopCamera);
+document.getElementById("closeCameraBtn").addEventListener("click", () => cameraDialog.close());
+document.getElementById("cancelCameraBtn").addEventListener("click", () => cameraDialog.close());
+cameraBtn.addEventListener("click", async () => {
+  if (busy) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showFileStatus("Camera access is unavailable. Open this app on localhost or HTTPS in a supported browser.", true);
+    return;
+  }
+  try {
+    cameraDialog.showModal();
+    const requestId = ++cameraRequestId;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {facingMode: {ideal: "environment"}},
+      audio: false
+    });
+    if (requestId !== cameraRequestId || !cameraDialog.open) {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    cameraStream = stream;
+    cameraPreview.srcObject = cameraStream;
+    await cameraPreview.play();
+    showFileStatus("");
+  } catch (error) {
+    cameraDialog.close();
+    stopCamera();
+    showFileStatus("Camera access was not granted or the camera could not start. Check browser permissions and try again.", true);
+  }
+});
+
+capturePhotoBtn.addEventListener("click", async () => {
+  if (busy) return;
+  if (!cameraPreview.videoWidth || !cameraPreview.videoHeight) {
+    showFileStatus("The camera is not ready yet. Please wait and try again.", true);
+    return;
+  }
+
+  const scale = Math.min(1, 1600 / Math.max(cameraPreview.videoWidth, cameraPreview.videoHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(cameraPreview.videoWidth * scale);
+  canvas.height = Math.round(cameraPreview.videoHeight * scale);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    showFileStatus("Could not capture a photo in this browser. Please try again.", true);
+    return;
+  }
+  context.drawImage(cameraPreview, 0, 0, canvas.width, canvas.height);
+  const image = canvas.toDataURL("image/jpeg", 0.85);
+  const prompt = document.getElementById("photoPrompt").value.trim();
+  if (!prompt) {
+    showFileStatus("Enter a question for Gemini about the photo.", true);
+    return;
+  }
+  cameraDialog.close();
+  await analyzePhoto(image, prompt);
+});
+
+async function analyzePhoto(image, prompt) {
+  if (busy) return;
+  const userText = `📷 Photo question: ${prompt}`;
+  let chat = activeChat();
+  if (!chat) {
+    chat = {
+      id: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+      title: userText.replace(/\s+/g, " ").slice(0, 48),
+      updatedAt: Date.now(),
+      messages: []
+    };
+    chats.unshift(chat);
+    activeChatId = chat.id;
+  }
+
+  chat.messages.push({role: "user", content: userText});
+  chat.updatedAt = Date.now();
+  renderMessages();
+  renderHistory();
+  const loading = makeMessageElement("assistant", "Gemini is looking at your photo…");
+  loading.classList.add("loading");
+  messages.appendChild(loading);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  setBusy(true);
+
+  try {
+    const response = await fetch("/api/analyze-image", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({image, prompt})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Gemini could not analyze the photo.");
+    const answer = typeof data.answer === "string" && data.answer.trim()
+      ? stripWrappingQuotes(data.answer)
+      : "Gemini could not generate a response. Please try again.";
+    chat.messages.push({role: "assistant", content: answer});
+    chat.updatedAt = Date.now();
+    saveChats();
+    loading.remove();
+    messages.appendChild(makeMessageElement("assistant", answer));
+  } catch (error) {
+    loading.remove();
+    messages.appendChild(makeMessageElement("assistant", error.message || "Could not analyze the photo.", true));
+  } finally {
+    setBusy(false);
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+}
 
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files[0];
