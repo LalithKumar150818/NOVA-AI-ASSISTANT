@@ -1,12 +1,15 @@
 # Nova AI Assistant — Mini Project
 
-A local AI assistant web app with a ChatGPT-inspired interface, text chat, camera photo analysis, browser voice-to-text, and document upload for TXT, PDF, and DOCX files.
+A Flask-based AI assistant with text chat, Gemini image generation and photo analysis, browser voice-to-text, and document upload for TXT, PDF, and DOCX files.
 
 ## Features
-- Responsive chat interface with multi-turn conversations and recent chats saved in the current browser
+- Responsive desktop and mobile chat interface with multi-turn conversations and recent chats saved in the current browser
+- Mobile-accessible recent-chat drawer; generated image files are stored in browser IndexedDB and chat metadata in local storage
 - ChatGPT-inspired composer, starter prompts, and mobile-friendly layout
-- Clearly formatted AI answers with headings, lists, paragraphs, code blocks, and relevant takeaways or next steps
+- Clearly formatted AI answers that follow the language explicitly requested for each turn, or otherwise the language of the user's latest message
 - AI answers through the Groq API
+- Create images from ordinary prompts through Gemini image generation and display them in the conversation
+- Display generated images as soon as Gemini responds, while saving them to browser storage in the background
 - Capture a photo in the browser and ask Gemini to describe or analyze it
 - Voice-to-text in supported browsers (Chrome/Edge recommended)
 - Upload TXT, text-based PDF, and DOCX; then ask questions about the extracted text
@@ -18,6 +21,7 @@ A local AI assistant web app with a ChatGPT-inspired interface, text chat, camer
 - HTML/CSS/JavaScript: frontend
 - Groq Python SDK: text chat API
 - Google Gemini API: photo analysis
+- Google Gemini image model: image generation
 - pypdf and python-docx: text extraction
 - Browser Web Speech API: microphone input
 
@@ -65,7 +69,7 @@ A local AI assistant web app with a ChatGPT-inspired interface, text chat, camer
    Copy-Item .env.example .env
    ```
 
-8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the default Groq model `openai/gpt-oss-120b`; image analysis uses `gemini-2.5-flash`. Update `GROQ_MODEL` or `GEMINI_MODEL` if those models are unavailable for your accounts.
+8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the default Groq model `openai/gpt-oss-120b`; photo analysis uses `gemini-2.5-flash`; image generation uses `gemini-2.5-flash-image`. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable for your account.
 
 9. Start the app:
 
@@ -81,22 +85,36 @@ A local AI assistant web app with a ChatGPT-inspired interface, text chat, camer
 1. Ask: `Explain Python loops with two examples.`
 2. Ask a follow-up question and confirm Nova uses earlier messages in the same chat.
 3. Click `New chat`, then switch to an earlier conversation from the Recent Chats list.
-4. Click the microphone and allow access; speak a short question.
-5. Click the camera button, allow camera access, take a photo, and ask Gemini a question about it.
-6. Upload a TXT, text-based PDF, or DOCX file.
-7. Ask: `Summarize the uploaded document in five bullet points.`
-8. Click `Clear document` to remove document context from the session.
+4. Ask: `Generate an example image of a friendly robot reading under a tree.` The image should appear in the chat.
+5. On a phone-sized browser window, tap `Chats` and reopen a recent conversation.
+6. Click the microphone and allow access; speak a short question.
+7. Click the camera button, allow camera access, take a photo, and ask Gemini a question about it.
+8. Upload a TXT, text-based PDF, or DOCX file.
+9. Ask: `Summarize the uploaded document in five bullet points.`
+10. Click `Clear document` to remove document context from the session.
 
-Chat history is saved locally in the browser and is not shared across browsers or devices. Photo data is sent to Gemini for analysis; the app does not store the photo. Text chat and uploaded document context continue to use Groq. Nova's interface and conversation flow are inspired by common AI chat apps, but it does not use ChatGPT or Claude models.
+Chat history is saved locally in the browser and is not shared across browsers or devices. This lets a user reopen chats on the same phone/browser; sharing history between a phone and a computer requires user accounts and a server-side database, neither of which this demo currently has. Generated image files are stored separately in browser IndexedDB to avoid filling the smaller local-storage quota, without delaying the first display of the image. Image-generation time itself depends on Gemini's model, service load, and network; the app cannot guarantee a shorter provider generation time. Photo data is sent to Gemini for analysis; the app does not store the captured photo. Text chat and uploaded document context continue to use Groq. Nova's response quality depends on the configured Groq model and provider limits; this project does not run or include ChatGPT, Claude, or Gemini chat models.
 
-## Voice language
+## Deploying
+
+Deploy the `ai_assistant_mini_project` folder as a Python web service on a host that supports Flask and Gunicorn (for example, Render):
+
+1. Set the project root to `ai_assistant_mini_project`.
+2. Use `pip install -r requirements.txt` as the build command.
+3. Use `gunicorn app:app` as the start command.
+4. Configure `GROQ_API_KEY`, `GEMINI_API_KEY`, and a unique `FLASK_SECRET_KEY` as private environment variables. Set `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` only if you need to use a different model. Do not put secrets in source code or commit `.env`.
+5. Enable HTTPS on the host. Browser camera and microphone access require localhost or a secure (HTTPS) origin.
+
+Generate a secret locally with `python -c "import secrets; print(secrets.token_hex(32))"` and add the result as `FLASK_SECRET_KEY` in the host settings. Never use the example secret in a public deployment. The included Gunicorn command runs without Flask's development server or debugger. This demo stores conversations in each visitor's browser, not on the server; hosting it does not synchronize chat history across devices.
+
+## Voice input language
 In `static/app.js`, change:
 
 ```javascript
 recognition.lang = "en-IN";
 ```
 
-to `te-IN` for Telugu voice input, if your browser supports it.
+to `te-IN` for Telugu voice input, if your browser supports it. This setting affects speech recognition only. For chat, ask for a response in any language (for example, "Reply in Telugu") or simply write your question in that language. Nova is instructed to follow the language requested for the current turn, and otherwise respond in the language of your latest message; support for a specific language depends on the configured AI provider/model.
 
 Voice input is browser-dependent. The app uses speech recognition to convert speech into text; it does not include a separate spoken audio reply (text-to-speech) yet.
 
@@ -111,6 +129,7 @@ Voice input is browser-dependent. The app uses speech recognition to convert spe
 - `npm run dev` fails with `ENOENT` for `package.json`: this is a Python/Flask project, not a Node.js project. From the `ai_assistant_mini_project` folder, start it with `python app.py`, then open http://127.0.0.1:5000.
 - `ModuleNotFoundError`: confirm `.venv` is active and run `pip install -r requirements.txt`.
 - `GROQ_API_KEY is missing`: check that `.env` is in the project folder or the parent folder, and restart `python app.py`.
+- Image generation fails: check `GEMINI_API_KEY`, confirm `GEMINI_IMAGE_MODEL` is available to your account (default `gemini-2.5-flash-image`), and review the error shown in the chat.
 - `401` / authentication error: create a valid key in Groq Console and paste it without quotes or extra spaces.
 - Gemini photo analysis fails: check `GEMINI_API_KEY`, confirm the configured `GEMINI_MODEL` is available, and try a smaller photo.
 - Model error: check which models are currently available for your Groq account, then update `GROQ_MODEL` in `.env`.

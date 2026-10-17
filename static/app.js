@@ -11,11 +11,16 @@ const cameraDialog = document.getElementById("cameraDialog");
 const cameraPreview = document.getElementById("cameraPreview");
 const capturePhotoBtn = document.getElementById("capturePhotoBtn");
 const historyList = document.getElementById("chatHistory");
+const appShell = document.querySelector(".app-shell");
+const mobileHistoryBtn = document.getElementById("mobileHistoryBtn");
+const historyBackdrop = document.getElementById("historyBackdrop");
 const STORAGE_KEY = "nova-ai-chats-v1";
+const IMAGE_DATABASE = "nova-ai-generated-images-v1";
 const MAX_SAVED_CHATS = 30;
 let chats = loadChats();
 let activeChatId = null;
 let busy = false;
+const imageObjectUrls = new Set();
 
 function loadChats() {
   try {
@@ -24,7 +29,8 @@ function loadChats() {
     return saved.filter(chat =>
       chat && typeof chat.id === "string" && typeof chat.title === "string" &&
       Array.isArray(chat.messages) && chat.messages.every(message =>
-        message && ["user", "assistant"].includes(message.role) && typeof message.content === "string"
+        message && ["user", "assistant"].includes(message.role) && typeof message.content === "string" &&
+        (!("imageId" in message) || typeof message.imageId === "string")
       )
     ).slice(0, MAX_SAVED_CHATS);
   } catch (error) {
@@ -37,12 +43,86 @@ function saveChats() {
   chats.sort((a, b) => b.updatedAt - a.updatedAt);
   chats = chats.slice(0, MAX_SAVED_CHATS);
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+    const savedChats = chats.map(chat => ({
+      ...chat,
+      messages: chat.messages.map(({imageDataUrl, ...message}) => message)
+    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(savedChats));
   } catch (error) {
     console.warn("Could not save Nova chats.", error);
     showFileStatus("Chat history could not be saved in this browser.", true);
   }
   renderHistory();
+}
+
+function openImageDatabase() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("This browser does not support saving generated images."));
+      return;
+    }
+    const request = indexedDB.open(IMAGE_DATABASE, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("images");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Could not open the generated-image store."));
+  });
+}
+
+async function storeGeneratedImage(dataUrl) {
+  const image = await (await fetch(dataUrl)).blob();
+  const database = await openImageDatabase();
+  const imageId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("images", "readwrite");
+      transaction.objectStore("images").put(image, imageId);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error("Could not save the generated image."));
+      transaction.onabort = () => reject(transaction.error || new Error("Could not save the generated image."));
+    });
+    return imageId;
+  } finally {
+    database.close();
+  }
+}
+
+async function loadStoredImage(imageId, imageElement) {
+  try {
+    const database = await openImageDatabase();
+    let image;
+    try {
+      image = await new Promise((resolve, reject) => {
+        const transaction = database.transaction("images", "readonly");
+        const request = transaction.objectStore("images").get(imageId);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error("Could not load a saved image."));
+      });
+    } finally {
+      database.close();
+    }
+    if (!image) {
+      if (imageElement.isConnected) {
+        showFileStatus("A generated image saved with this chat is no longer available in this browser.", true);
+      }
+      return;
+    }
+    const objectUrl = URL.createObjectURL(image);
+    if (!imageElement.isConnected) {
+      URL.revokeObjectURL(objectUrl);
+      return;
+    }
+    imageObjectUrls.add(objectUrl);
+    imageElement.src = objectUrl;
+  } catch (error) {
+    if (imageElement.isConnected) {
+      showFileStatus(error.message || "Could not load a saved generated image.", true);
+    }
+  }
+}
+
+function releaseImageObjectUrls() {
+  for (const objectUrl of imageObjectUrls) URL.revokeObjectURL(objectUrl);
+  imageObjectUrls.clear();
 }
 
 function showFileStatus(text, isError = false) {
@@ -69,6 +149,7 @@ function renderHistory() {
       input.value = "";
       renderMessages();
       renderHistory();
+      setMobileHistoryOpen(false);
     });
     historyList.appendChild(button);
   }
@@ -239,7 +320,7 @@ function renderMarkdown(text) {
   return blocks.join("");
 }
 
-function makeMessageElement(role, text, isError = false) {
+function makeMessageElement(role, text, isError = false, imageId = null, imageDataUrl = null) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
   const avatar = document.createElement("div");
@@ -249,9 +330,18 @@ function makeMessageElement(role, text, isError = false) {
   const content = document.createElement("div");
   content.className = "message-content";
   if (role === "assistant" && !isError && !row.classList.contains("loading")) {
-    content.innerHTML = renderMarkdown(text);
+    content.innerHTML = text ? renderMarkdown(text) : "";
   } else {
     content.textContent = text;
+  }
+  if (role === "assistant" && !isError && (imageId || imageDataUrl)) {
+    const image = document.createElement("img");
+    image.className = "generated-image";
+    image.alt = text || "Generated image";
+    image.loading = "lazy";
+    if (imageDataUrl) image.src = imageDataUrl;
+    else loadStoredImage(imageId, image);
+    content.appendChild(image);
   }
   row.append(avatar, content);
   return row;
@@ -261,13 +351,22 @@ function renderMessages() {
   const chat = activeChat();
   const hasMessages = Boolean(chat && chat.messages.length);
   welcome.hidden = hasMessages;
+  releaseImageObjectUrls();
   messages.replaceChildren();
   if (chat) {
     for (const message of chat.messages) {
-      messages.appendChild(makeMessageElement(message.role, message.content, message.isError));
+      messages.appendChild(makeMessageElement(
+        message.role, message.content, message.isError, message.imageId, message.imageDataUrl
+      ));
     }
   }
   chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function setMobileHistoryOpen(open) {
+  appShell.classList.toggle("history-open", open);
+  historyBackdrop.hidden = !open;
+  mobileHistoryBtn.setAttribute("aria-expanded", String(open));
 }
 
 function setBusy(value) {
@@ -277,8 +376,27 @@ function setBusy(value) {
   sendBtn.setAttribute("aria-label", value ? "Waiting for Nova" : "Send message");
 }
 
+function isImageGenerationRequest(text) {
+  const asksHowTo = /\b(?:how|why|when|where|what)\b.{0,50}\b(?:generate|create|draw|make|design|illustrate|paint)\b/i.test(text);
+  const asksForImage = /\b(?:generate|create|draw|make|design|illustrate|paint)\b[\s\S]{0,100}\b(?:images?|pictures?|photos?|illustrations?|artwork|drawings?|wallpapers?|logos?)\b/i.test(text);
+  return asksForImage && !asksHowTo;
+}
+
+function buildImagePrompt(chatMessages) {
+  const label = "Image request: ";
+  const currentRequest = chatMessages[chatMessages.length - 1].content.slice(0, 12000 - label.length);
+  const context = chatMessages.slice(-7, -1)
+    .map(message => `${message.role}: ${message.content.slice(0, 500)}`)
+    .join("\n");
+  const contextLabel = context ? `Recent conversation context:\n${context}\n\n` : "";
+  const availableContext = Math.max(0, 12000 - currentRequest.length - label.length);
+  const keptContext = availableContext ? contextLabel.slice(-availableContext) : "";
+  return `${keptContext}${label}${currentRequest}`;
+}
+
 function startNewChat() {
   if (busy) return;
+  setMobileHistoryOpen(false);
   activeChatId = null;
   input.value = "";
   input.style.height = "auto";
@@ -309,40 +427,79 @@ async function sendMessage(textOverride) {
   chat.updatedAt = Date.now();
   input.value = "";
   input.style.height = "auto";
+  saveChats();
   renderMessages();
-  renderHistory();
-  const loading = makeMessageElement("assistant", "Thinking…");
+  const generateImage = isImageGenerationRequest(message);
+  const loading = makeMessageElement("assistant", generateImage ? "Creating your image…" : "Thinking…");
   loading.classList.add("loading");
   messages.appendChild(loading);
   chatArea.scrollTop = chatArea.scrollHeight;
   setBusy(true);
+  const imageWaitNotice = generateImage
+    ? window.setTimeout(() => {
+      const loadingText = loading.querySelector(".message-content");
+      if (loadingText && loading.isConnected) {
+        loadingText.textContent = "Still creating your image. Detailed requests may take longer.";
+      }
+    }, 15000)
+    : null;
 
   try {
-    const response = await fetch("/api/chat", {
+    const endpoint = generateImage ? "/api/generate-image" : "/api/chat";
+    const body = generateImage
+      ? {prompt: buildImagePrompt(chat.messages)}
+      : {messages: chat.messages.slice(-24).map(({role, content}) => ({role, content}))};
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({messages: chat.messages.slice(-24).map(({role, content}) => ({role, content}))})
+      body: JSON.stringify(body)
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Something went wrong.");
     const answer = typeof data.answer === "string" && data.answer.trim()
       ? stripWrappingQuotes(data.answer)
-      : "I couldn't generate a response. Please try again.";
-    chat.messages.push({role: "assistant", content: answer});
+      : (generateImage ? "" : "I couldn't generate a response. Please try again.");
+    const imageDataUrl = generateImage && typeof data.imageDataUrl === "string"
+      ? data.imageDataUrl
+      : null;
+    const assistantMessage = {
+      role: "assistant",
+      content: answer,
+      ...(imageDataUrl ? {imageDataUrl} : {})
+    };
+    chat.messages.push(assistantMessage);
     chat.updatedAt = Date.now();
     saveChats();
     loading.remove();
-    messages.appendChild(makeMessageElement("assistant", answer));
+    messages.appendChild(makeMessageElement("assistant", answer, false, null, imageDataUrl));
+    if (imageDataUrl) {
+      storeGeneratedImage(imageDataUrl).then(imageId => {
+        assistantMessage.imageId = imageId;
+        delete assistantMessage.imageDataUrl;
+        saveChats();
+      }).catch(error => {
+        console.warn("Could not save the generated Nova image.", error);
+        showFileStatus("Image generated, but this browser could not save it for later.", true);
+      });
+    }
   } catch (error) {
     loading.remove();
     messages.appendChild(makeMessageElement("assistant", error.message || "Could not connect to Nova.", true));
   } finally {
+    if (imageWaitNotice !== null) window.clearTimeout(imageWaitNotice);
     setBusy(false);
     chatArea.scrollTop = chatArea.scrollHeight;
   }
 }
 
 sendBtn.addEventListener("click", () => sendMessage());
+mobileHistoryBtn.addEventListener("click", () => {
+  setMobileHistoryOpen(!appShell.classList.contains("history-open"));
+});
+historyBackdrop.addEventListener("click", () => setMobileHistoryOpen(false));
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") setMobileHistoryOpen(false);
+});
 input.addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -447,8 +604,8 @@ async function analyzePhoto(image, prompt) {
 
   chat.messages.push({role: "user", content: userText});
   chat.updatedAt = Date.now();
+  saveChats();
   renderMessages();
-  renderHistory();
   const loading = makeMessageElement("assistant", "Gemini is looking at your photo…");
   loading.classList.add("loading");
   messages.appendChild(loading);

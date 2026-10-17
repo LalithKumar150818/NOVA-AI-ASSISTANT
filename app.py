@@ -31,7 +31,19 @@ MAX_MESSAGE_CHARS = 12000
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 MODEL_FALLBACKS = [DEFAULT_GROQ_MODEL]
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
+LANGUAGE_INSTRUCTIONS = (
+    "Language is important: answer this turn in the language the user explicitly asks for. If they do not "
+    "explicitly request a language, answer in the language of their latest message; if it contains multiple "
+    "languages, use the one used for the actual question. Support the language and writing system they request "
+    "as well as you can, including non-English languages. Translate your explanations, headings, and labels into "
+    "that language, while keeping code, identifiers, and standard technical terms intact where appropriate. "
+    "Do not add a second-language translation unless they ask for one. Treat language choice as turn-specific: "
+    "do not keep using a language requested in an earlier turn after the user switches language or gives a new "
+    "request. If the user asks about a word or text in another language, explain it in the language they requested "
+    "or otherwise in the language of their question."
+)
 # In-memory document store for this local demo; avoids putting large text in the session cookie.
 DOCUMENTS = {}
 
@@ -44,6 +56,11 @@ def get_groq_model():
 def get_gemini_model():
     configured_model = (os.getenv("GEMINI_MODEL") or "").strip()
     return configured_model or DEFAULT_GEMINI_MODEL
+
+
+def get_gemini_image_model():
+    configured_model = (os.getenv("GEMINI_IMAGE_MODEL") or "").strip()
+    return configured_model or DEFAULT_GEMINI_IMAGE_MODEL
 
 
 def extract_text(file_storage):
@@ -74,9 +91,11 @@ def extract_text(file_storage):
     session.modified = True
     return filename, len(content)
 
+
 @app.route("/")
 def home():
     return render_template("index.html")
+
 
 @app.route("/api/upload", methods=["POST"])
 def upload():
@@ -90,6 +109,7 @@ def upload():
         return jsonify(message=f"Uploaded {name}. Extracted {char_count:,} characters.", filename=name)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -125,7 +145,13 @@ def chat():
     document_text = document.get("text", "")
     document_name = document.get("name", "")
     system_prompt = (
-        "You are Nova, a helpful AI assistant. Answer clearly, accurately, and in a polished, easy-to-read format. "
+        "You are Nova, a knowledgeable, thoughtful AI assistant. Understand the user's actual goal, use the "
+        "conversation history to resolve references and follow-ups, and adapt the depth and format to the task. "
+        "Be accurate, concrete, and useful; explain assumptions, distinguish established facts from uncertainty, "
+        "and never invent sources, quotations, or capabilities. If important details are missing, ask a focused "
+        "clarifying question or state a reasonable assumption. For current information you cannot verify, say so. "
+        "For code, give runnable examples and mention relevant edge cases. "
+        "Answer clearly and in a polished, easy-to-read format. "
         "Use Markdown when it improves readability: bold, descriptive headings for longer answers, short paragraphs, "
         "bullet or numbered lists for grouped information, and fenced code blocks for code. "
         "Keep simple answers direct; make detailed answers well organized and explain important steps. "
@@ -133,9 +159,9 @@ def chat():
         "or **Tips**. Include useful suggestions or a clear takeaway when they genuinely help, but do not add "
         "generic filler or force extra sections onto a short, straightforward answer. "
         "Do not wrap the whole answer in quotation marks or add decorative symbols. "
+        f"{LANGUAGE_INSTRUCTIONS} "
         "If the user asks about an uploaded document, use the provided document text. "
         "If the answer is not in the document, say that the document does not contain enough information. "
-        "The user may speak Telugu or English; respond in the language they use."
     )
     conversation_messages = [
         {"role": "system", "content": system_prompt},
@@ -166,8 +192,8 @@ def chat():
                 completion = client.chat.completions.create(
                     model=model_name,
                     messages=conversation_messages,
-                    temperature=0.4,
-                    max_completion_tokens=1200,
+                    temperature=0.3,
+                    max_completion_tokens=2400,
                 )
                 answer = completion.choices[0].message.content or "I couldn't generate a response."
                 return jsonify(answer=answer)
@@ -181,6 +207,92 @@ def chat():
     except Exception as exc:
         # Keep this useful for local development; never print API keys.
         return jsonify(error=f"AI request failed: {exc}"), 502
+
+
+@app.route("/api/generate-image", methods=["POST"])
+def generate_image():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="The request must be a JSON object."), 400
+
+    prompt = data.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_MESSAGE_CHARS:
+        return jsonify(error=f"The image prompt must contain between 1 and {MAX_MESSAGE_CHARS:,} characters."), 400
+
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return jsonify(error="GEMINI_API_KEY is missing. Add your key to the .env file and restart the server."), 500
+
+    request_body = {
+        "contents": [{
+            "parts": [{
+                "text": (
+                    f"{LANGUAGE_INSTRUCTIONS} "
+                    "If the image contains visible writing, use only the language the user requested, or otherwise "
+                    "the language of their latest message; do not add text unless the prompt asks for it. "
+                    "Generate the requested image now:\n"
+                    f"{prompt.strip()}"
+                ),
+            }],
+        }],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{quote(get_gemini_image_model(), safe='')}:generateContent"
+    )
+    gemini_request = Request(
+        url,
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        method="POST",
+    )
+    try:
+        with urlopen(gemini_request, timeout=90) as response:
+            response_data = json.loads(response.read())
+    except HTTPError as exc:
+        provider_error = exc.read(4000).decode("utf-8", errors="replace")
+        return jsonify(error=f"Gemini image generation failed ({exc.code}): {provider_error}"), 502
+    except URLError as exc:
+        return jsonify(error=f"Could not connect to Gemini: {exc.reason}"), 502
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return jsonify(error="Gemini returned an unreadable response. Please try again."), 502
+
+    if not isinstance(response_data, dict):
+        return jsonify(error="Gemini returned an unreadable response. Please try again."), 502
+    candidates = response_data.get("candidates")
+    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+        return jsonify(error="Gemini could not generate this image. Try a different prompt."), 502
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    if not isinstance(parts, list):
+        return jsonify(error="Gemini returned an unreadable response. Please try again."), 502
+
+    answer_parts = []
+    image_data_url = None
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str):
+            answer_parts.append(part["text"])
+        inline_data = part.get("inlineData")
+        if not isinstance(inline_data, dict) or image_data_url is not None:
+            continue
+        mime_type = inline_data.get("mimeType")
+        encoded_image = inline_data.get("data")
+        if mime_type not in {"image/jpeg", "image/png", "image/webp"} or not isinstance(encoded_image, str):
+            continue
+        try:
+            image_bytes = base64.b64decode(encoded_image, validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        if image_bytes and len(image_bytes) <= MAX_IMAGE_BYTES:
+            image_data_url = f"data:{mime_type};base64,{encoded_image}"
+
+    if not image_data_url:
+        return jsonify(error="Gemini did not return a usable image. Please try a different prompt."), 502
+    answer = "\n".join(answer_parts).strip()
+    return jsonify(answer=answer, imageDataUrl=image_data_url)
 
 
 @app.route("/api/analyze-image", methods=["POST"])
@@ -224,7 +336,8 @@ def analyze_image():
                     "For substantial answers, finish with a concise, relevant section such as **In summary**, "
                     "**Next steps**, or **Tips**. Offer practical suggestions or a useful takeaway when appropriate, "
                     "without adding generic filler or forcing sections onto a short answer. "
-                    "Do not wrap the whole answer in quotation marks or add decorative symbols.\n\n"
+                    "Do not wrap the whole answer in quotation marks or add decorative symbols. "
+                    f"{LANGUAGE_INSTRUCTIONS}\n\n"
                     f"Photo question: {prompt.strip()}"
                 )},
                 {"inlineData": {
@@ -285,5 +398,6 @@ def clear_document():
 def too_large(_error):
     return jsonify(error="Request is too large. Maximum request size is 10 MB."), 413
 
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=os.getenv("FLASK_DEBUG") == "1")

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nova AI Assistant</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=7) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=8) }}">
 </head>
 <body>
   <div class="app-shell">
@@ -18,6 +18,7 @@
       <nav id="chatHistory" class="chat-history" aria-label="Recent chats"></nav>
       <div class="sidebar-bottom">Mini project · Local demo</div>
     </aside>
+    <button id="historyBackdrop" class="history-backdrop" type="button" aria-label="Close recent chats" hidden></button>
     <main class="main">
       <header class="topbar">
         <div class="topbar-left">
@@ -25,6 +26,7 @@
           <div class="model-label"><span class="status-dot"></span> Nova AI <span class="model-caption">· Powered by Groq</span></div>
         </div>
         <div class="topbar-actions">
+          <button id="mobileHistoryBtn" class="mobile-history" type="button" aria-expanded="false" aria-controls="chatHistory">Chats</button>
           <button id="mobileNewChatBtn" class="mobile-new-chat" aria-label="Start a new chat">＋ New chat</button>
           <button id="clearDocBtn" class="clear-doc" title="Remove uploaded document context">Clear document</button>
         </div>
@@ -33,7 +35,7 @@
         <div id="welcome" class="welcome">
           <div class="hero-icon">✦</div>
           <h1>What can I help with?</h1>
-          <p>Ask anything, continue a conversation, or upload a document to explore it.</p>
+          <p>Ask anything, create an image, continue a conversation, or upload a document to explore it.</p>
           <div class="suggestions">
             <button class="suggestion" data-prompt="Explain Python functions with two examples."><span>⌘</span><strong>Learn something</strong><small>Explain a topic with examples</small></button>
             <button class="suggestion" data-prompt="Give me a beginner-friendly mini project roadmap."><span>↗</span><strong>Plan a project</strong><small>Break an idea into steps</small></button>
@@ -56,7 +58,7 @@
           </button>
           <button id="sendBtn" class="send-btn" title="Send message" aria-label="Send message">↑</button>
         </div>
-        <div class="composer-hint">Nova can make mistakes. Check important information. Photos are sent to Gemini for analysis; uploaded document text is sent to Groq.</div>
+        <div class="composer-hint">Ask Nova to create an image in your prompt. Generated images stay in this browser. Photos are sent to Gemini; document text is sent to Groq.</div>
       </div>
     </main>
   </div>
@@ -76,6 +78,6 @@
       <p class="camera-note">Your camera stays on only while this window is open. The captured photo is sent to Gemini.</p>
     </div>
   </dialog>
-  <script src="{{ url_for('static', filename='app.js', v=6) }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=8) }}"></script>
 </body>
 </html>
