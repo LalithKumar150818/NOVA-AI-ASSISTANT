@@ -13,7 +13,10 @@ const capturePhotoBtn = document.getElementById("capturePhotoBtn");
 const historyList = document.getElementById("chatHistory");
 const appShell = document.querySelector(".app-shell");
 const mobileHistoryBtn = document.getElementById("mobileHistoryBtn");
+const closeHistoryBtn = document.getElementById("closeHistoryBtn");
 const historyBackdrop = document.getElementById("historyBackdrop");
+const webSearchBtn = document.getElementById("webSearchBtn");
+const imageSearchBtn = document.getElementById("imageSearchBtn");
 const STORAGE_KEY = "nova-ai-chats-v1";
 const IMAGE_DATABASE = "nova-ai-generated-images-v1";
 const MAX_SAVED_CHATS = 30;
@@ -30,7 +33,9 @@ function loadChats() {
       chat && typeof chat.id === "string" && typeof chat.title === "string" &&
       Array.isArray(chat.messages) && chat.messages.every(message =>
         message && ["user", "assistant"].includes(message.role) && typeof message.content === "string" &&
-        (!("imageId" in message) || typeof message.imageId === "string")
+        (!("imageId" in message) || typeof message.imageId === "string") &&
+        (!("sources" in message) || Array.isArray(message.sources)) &&
+        (!("images" in message) || Array.isArray(message.images))
       )
     ).slice(0, MAX_SAVED_CHATS);
   } catch (error) {
@@ -320,7 +325,84 @@ function renderMarkdown(text) {
   return blocks.join("");
 }
 
-function makeMessageElement(role, text, isError = false, imageId = null, imageDataUrl = null) {
+function getExternalUrl(value, permittedHost) {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    if (permittedHost && url.hostname !== permittedHost) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function appendSearchResults(content, sources, images) {
+  if (Array.isArray(sources) && sources.length) {
+    const section = document.createElement("section");
+    section.className = "source-results";
+    const heading = document.createElement("strong");
+    heading.textContent = "Sources";
+    section.appendChild(heading);
+    const list = document.createElement("ol");
+    sources.forEach(source => {
+      const url = source && getExternalUrl(source.url);
+      if (!url || typeof source.title !== "string") return;
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = source.title;
+      item.appendChild(link);
+      if (typeof source.snippet === "string" && source.snippet) {
+        const snippet = document.createElement("p");
+        snippet.textContent = source.snippet;
+        item.appendChild(snippet);
+      }
+      list.appendChild(item);
+    });
+    if (list.childElementCount) {
+      section.appendChild(list);
+      content.appendChild(section);
+    }
+  }
+
+  if (Array.isArray(images) && images.length) {
+    const section = document.createElement("section");
+    section.className = "image-results";
+    const heading = document.createElement("strong");
+    heading.textContent = "Image results · Wikimedia Commons";
+    section.appendChild(heading);
+    const grid = document.createElement("div");
+    grid.className = "image-results-grid";
+    images.forEach(result => {
+      const imageUrl = result && getExternalUrl(result.thumbnail, "upload.wikimedia.org");
+      const sourceUrl = result && getExternalUrl(result.url);
+      if (!imageUrl || !sourceUrl) return;
+      const link = document.createElement("a");
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = "image-result";
+      const image = document.createElement("img");
+      image.src = imageUrl;
+      image.alt = typeof result.title === "string" ? result.title : "Search result";
+      image.loading = "lazy";
+      const caption = document.createElement("span");
+      caption.textContent = typeof result.title === "string" ? result.title : "View image";
+      link.append(image, caption);
+      grid.appendChild(link);
+    });
+    if (grid.childElementCount) {
+      section.appendChild(grid);
+      content.appendChild(section);
+    }
+  }
+}
+
+function makeMessageElement(
+  role, text, isError = false, imageId = null, imageDataUrl = null, sources = [], images = []
+) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
   const avatar = document.createElement("div");
@@ -343,6 +425,7 @@ function makeMessageElement(role, text, isError = false, imageId = null, imageDa
     else loadStoredImage(imageId, image);
     content.appendChild(image);
   }
+  if (role === "assistant" && !isError) appendSearchResults(content, sources, images);
   row.append(avatar, content);
   return row;
 }
@@ -356,7 +439,8 @@ function renderMessages() {
   if (chat) {
     for (const message of chat.messages) {
       messages.appendChild(makeMessageElement(
-        message.role, message.content, message.isError, message.imageId, message.imageDataUrl
+        message.role, message.content, message.isError, message.imageId, message.imageDataUrl,
+        message.sources, message.images
       ));
     }
   }
@@ -367,7 +451,20 @@ function setMobileHistoryOpen(open) {
   appShell.classList.toggle("history-open", open);
   historyBackdrop.hidden = !open;
   mobileHistoryBtn.setAttribute("aria-expanded", String(open));
+  mobileHistoryBtn.setAttribute("aria-label", open ? "Close recent chats" : "Open recent chats");
+  document.body.classList.toggle("history-drawer-open", open && window.matchMedia("(max-width: 880px)").matches);
+  if (open) {
+    closeHistoryBtn.focus();
+  } else if (mobileHistoryBtn.offsetParent !== null) {
+    mobileHistoryBtn.focus();
+  }
 }
+
+window.matchMedia("(max-width: 880px)").addEventListener("change", event => {
+  if (!event.matches && appShell.classList.contains("history-open")) {
+    setMobileHistoryOpen(false);
+  }
+});
 
 function setBusy(value) {
   busy = value;
@@ -430,7 +527,12 @@ async function sendMessage(textOverride) {
   saveChats();
   renderMessages();
   const generateImage = isImageGenerationRequest(message);
-  const loading = makeMessageElement("assistant", generateImage ? "Creating your image…" : "Thinking…");
+  const hasSearch = webSearchBtn.getAttribute("aria-pressed") === "true" ||
+    imageSearchBtn.getAttribute("aria-pressed") === "true";
+  const loading = makeMessageElement(
+    "assistant",
+    generateImage ? "Creating your image…" : (hasSearch ? "Searching and thinking…" : "Thinking…")
+  );
   loading.classList.add("loading");
   messages.appendChild(loading);
   chatArea.scrollTop = chatArea.scrollHeight;
@@ -448,7 +550,11 @@ async function sendMessage(textOverride) {
     const endpoint = generateImage ? "/api/generate-image" : "/api/chat";
     const body = generateImage
       ? {prompt: buildImagePrompt(chat.messages)}
-      : {messages: chat.messages.slice(-24).map(({role, content}) => ({role, content}))};
+      : {
+        messages: chat.messages.slice(-24).map(({role, content}) => ({role, content})),
+        web_search: webSearchBtn.getAttribute("aria-pressed") === "true",
+        image_search: imageSearchBtn.getAttribute("aria-pressed") === "true"
+      };
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -462,16 +568,22 @@ async function sendMessage(textOverride) {
     const imageDataUrl = generateImage && typeof data.imageDataUrl === "string"
       ? data.imageDataUrl
       : null;
+    const sources = !generateImage && Array.isArray(data.sources) ? data.sources : [];
+    const images = !generateImage && Array.isArray(data.images) ? data.images : [];
     const assistantMessage = {
       role: "assistant",
       content: answer,
-      ...(imageDataUrl ? {imageDataUrl} : {})
+      ...(imageDataUrl ? {imageDataUrl} : {}),
+      ...(sources.length ? {sources} : {}),
+      ...(images.length ? {images} : {})
     };
     chat.messages.push(assistantMessage);
     chat.updatedAt = Date.now();
     saveChats();
     loading.remove();
-    messages.appendChild(makeMessageElement("assistant", answer, false, null, imageDataUrl));
+    messages.appendChild(makeMessageElement(
+      "assistant", answer, false, null, imageDataUrl, sources, images
+    ));
     if (imageDataUrl) {
       storeGeneratedImage(imageDataUrl).then(imageId => {
         assistantMessage.imageId = imageId;
@@ -493,12 +605,21 @@ async function sendMessage(textOverride) {
 }
 
 sendBtn.addEventListener("click", () => sendMessage());
+for (const button of [webSearchBtn, imageSearchBtn]) {
+  button.addEventListener("click", () => {
+    const enabled = button.getAttribute("aria-pressed") !== "true";
+    button.setAttribute("aria-pressed", String(enabled));
+  });
+}
 mobileHistoryBtn.addEventListener("click", () => {
   setMobileHistoryOpen(!appShell.classList.contains("history-open"));
 });
+closeHistoryBtn.addEventListener("click", () => setMobileHistoryOpen(false));
 historyBackdrop.addEventListener("click", () => setMobileHistoryOpen(false));
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape") setMobileHistoryOpen(false);
+  if (event.key === "Escape" && appShell.classList.contains("history-open")) {
+    setMobileHistoryOpen(false);
+  }
 });
 input.addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey) {

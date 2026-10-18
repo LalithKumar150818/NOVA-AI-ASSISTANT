@@ -4,12 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nova AI Assistant</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=8) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=10) }}">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">✦</span><span>Nova AI</span></div>
+      <div class="sidebar-header">
+        <div class="brand"><span class="brand-mark">✦</span><span>Nova AI</span></div>
+        <button id="closeHistoryBtn" class="sidebar-close" type="button" aria-label="Close recent chats" title="Close sidebar">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
       <button id="newChatBtn" class="new-chat"><span aria-hidden="true">＋</span><span>New chat</span></button>
       <div class="sidebar-note">YOUR PERSONAL AI</div>
       <div class="side-tip"><span>⌕</span><div><strong>Ask anything</strong><small>Ideas, learning, coding and more</small></div></div>
@@ -26,7 +31,10 @@
           <div class="model-label"><span class="status-dot"></span> Nova AI <span class="model-caption">· Powered by Groq</span></div>
         </div>
         <div class="topbar-actions">
-          <button id="mobileHistoryBtn" class="mobile-history" type="button" aria-expanded="false" aria-controls="chatHistory">Chats</button>
+          <button id="mobileHistoryBtn" class="mobile-history" type="button" aria-expanded="false" aria-controls="chatHistory" aria-label="Open recent chats" title="Recent chats">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+            <span>Chats</span>
+          </button>
           <button id="mobileNewChatBtn" class="mobile-new-chat" aria-label="Start a new chat">＋ New chat</button>
           <button id="clearDocBtn" class="clear-doc" title="Remove uploaded document context">Clear document</button>
         </div>
@@ -47,8 +55,8 @@
       <div class="composer-wrap">
         <div id="fileStatus" class="file-status" hidden></div>
         <div class="composer">
-          <input id="fileInput" type="file" accept=".txt,.pdf,.docx" hidden>
-          <button id="uploadBtn" class="icon-btn" title="Upload TXT, PDF, or DOCX" aria-label="Upload file">＋</button>
+          <input id="fileInput" type="file" accept=".txt,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" hidden>
+          <button id="uploadBtn" class="icon-btn" title="Upload TXT, PDF, DOCX, JPG, PNG, or WebP" aria-label="Upload file">＋</button>
           <textarea id="messageInput" rows="1" placeholder="Message Nova..." aria-label="Message Nova"></textarea>
           <button id="cameraBtn" class="icon-btn camera-btn" title="Take a photo for Gemini to analyze" aria-label="Take a photo for Gemini">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.5"/></svg>
@@ -58,7 +66,11 @@
           </button>
           <button id="sendBtn" class="send-btn" title="Send message" aria-label="Send message">↑</button>
         </div>
-        <div class="composer-hint">Ask Nova to create an image in your prompt. Generated images stay in this browser. Photos are sent to Gemini; document text is sent to Groq.</div>
+        <div class="search-tools" role="group" aria-label="Search options">
+          <button id="webSearchBtn" class="search-toggle" type="button" aria-pressed="false" title="Search the web and cite sources">⌕ Web search</button>
+          <button id="imageSearchBtn" class="search-toggle" type="button" aria-pressed="false" title="Find relevant images on Wikimedia Commons">▧ Image search</button>
+        </div>
+        <div class="composer-hint">Turn on Web search for current answers with sources, or Image search to see relevant online pictures. Uploaded images and photos are analyzed by Gemini; document text is sent to Groq.</div>
       </div>
     </main>
   </div>
@@ -78,6 +90,6 @@
       <p class="camera-note">Your camera stays on only while this window is open. The captured photo is sent to Gemini.</p>
     </div>
   </dialog>
-  <script src="{{ url_for('static', filename='app.js', v=8) }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=10) }}"></script>
 </body>
 </html>
