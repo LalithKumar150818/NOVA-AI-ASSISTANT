@@ -516,22 +516,51 @@ def generate_image():
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_MESSAGE_CHARS:
         return jsonify(error=f"The image prompt must contain between 1 and {MAX_MESSAGE_CHARS:,} characters."), 400
 
+    reference_image = data.get("referenceImage")
+    reference_image_part = None
+    if reference_image is not None:
+        if not isinstance(reference_image, str):
+            return jsonify(error="The reference image must be a JPEG, PNG, or WebP data URL."), 400
+        header, separator, encoded_image = reference_image.partition(",")
+        mime_type = header.removeprefix("data:").removesuffix(";base64")
+        if not separator or header != f"data:{mime_type};base64" or mime_type not in {
+            "image/jpeg", "image/png", "image/webp"
+        }:
+            return jsonify(error="The reference image must be a JPEG, PNG, or WebP data URL."), 400
+        try:
+            image_bytes = base64.b64decode(encoded_image, validate=True)
+        except (binascii.Error, ValueError):
+            return jsonify(error="The reference image data is invalid. Please select it again."), 400
+        if not image_bytes:
+            return jsonify(error="The reference image is empty."), 400
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            return jsonify(error="Reference images must be 7 MB or smaller."), 413
+        reference_image_part = {
+            "inlineData": {
+                "mimeType": mime_type,
+                "data": base64.b64encode(image_bytes).decode("ascii"),
+            },
+        }
+
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         return jsonify(error="GEMINI_API_KEY is missing. Add your key to the .env file and restart the server."), 500
 
+    generation_parts = [{
+        "text": (
+            f"{LANGUAGE_INSTRUCTIONS} "
+            "If the image contains visible writing, use only the language the user requested, or otherwise "
+            "the language of their latest message; do not add text unless the prompt asks for it. "
+            "If a reference image is supplied, use it as visual guidance and preserve its relevant subject, "
+            "composition, or style unless the user asks for a change. "
+            "Generate the requested image now:\n"
+            f"{prompt.strip()}"
+        ),
+    }]
+    if reference_image_part:
+        generation_parts.append(reference_image_part)
     request_body = {
-        "contents": [{
-            "parts": [{
-                "text": (
-                    f"{LANGUAGE_INSTRUCTIONS} "
-                    "If the image contains visible writing, use only the language the user requested, or otherwise "
-                    "the language of their latest message; do not add text unless the prompt asks for it. "
-                    "Generate the requested image now:\n"
-                    f"{prompt.strip()}"
-                ),
-            }],
-        }],
+        "contents": [{"parts": generation_parts}],
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     url = (

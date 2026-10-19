@@ -4,7 +4,14 @@ const messages = document.getElementById("messages");
 const input = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const fileInput = document.getElementById("fileInput");
+const referenceImageInput = document.getElementById("referenceImageInput");
 const fileStatus = document.getElementById("fileStatus");
+const referencePreview = document.getElementById("referencePreview");
+const referencePreviewImage = document.getElementById("referencePreviewImage");
+const referenceImageName = document.getElementById("referenceImageName");
+const imageModeBtn = document.getElementById("imageModeBtn");
+const referenceBtn = document.getElementById("referenceBtn");
+const composerHint = document.getElementById("composerHint");
 const voiceBtn = document.getElementById("voiceBtn");
 const cameraBtn = document.getElementById("cameraBtn");
 const cameraDialog = document.getElementById("cameraDialog");
@@ -21,6 +28,8 @@ const MAX_SAVED_CHATS = 30;
 let chats = loadChats();
 let activeChatId = null;
 let busy = false;
+let imageMode = false;
+let referenceImageDataUrl = null;
 const imageObjectUrls = new Set();
 
 function loadChats() {
@@ -32,6 +41,8 @@ function loadChats() {
       Array.isArray(chat.messages) && chat.messages.every(message =>
         message && ["user", "assistant"].includes(message.role) && typeof message.content === "string" &&
         (!("imageId" in message) || typeof message.imageId === "string") &&
+        (!("referenceImageId" in message) || typeof message.referenceImageId === "string") &&
+        (!("referenceImageDataUrl" in message) || typeof message.referenceImageDataUrl === "string") &&
         (!("sources" in message) || Array.isArray(message.sources)) &&
         (!("images" in message) || Array.isArray(message.images))
       )
@@ -48,7 +59,7 @@ function saveChats() {
   try {
     const savedChats = chats.map(chat => ({
       ...chat,
-      messages: chat.messages.map(({imageDataUrl, ...message}) => message)
+      messages: chat.messages.map(({imageDataUrl, referenceImageDataUrl, ...message}) => message)
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(savedChats));
   } catch (error) {
@@ -105,7 +116,7 @@ async function loadStoredImage(imageId, imageElement) {
     }
     if (!image) {
       if (imageElement.isConnected) {
-        showFileStatus("A generated image saved with this chat is no longer available in this browser.", true);
+        showFileStatus("An image saved with this chat is no longer available in this browser.", true);
       }
       return;
     }
@@ -132,6 +143,37 @@ function showFileStatus(text, isError = false) {
   fileStatus.hidden = !text;
   fileStatus.textContent = text || "";
   fileStatus.classList.toggle("is-error", isError);
+}
+
+function setImageMode(enabled) {
+  imageMode = enabled;
+  imageModeBtn.setAttribute("aria-pressed", String(enabled));
+  imageModeBtn.classList.toggle("active", enabled);
+  referenceBtn.hidden = !enabled;
+  input.placeholder = enabled ? "Describe the image you want to create..." : "Message Nova...";
+  composerHint.textContent = enabled
+    ? "Describe your image, or add a reference photo to guide its subject, style, or composition."
+    : "Nova can answer questions, write code, explain concepts, search current sources, and help with images.";
+}
+
+function clearReferenceImage() {
+  referenceImageDataUrl = null;
+  referenceImageInput.value = "";
+  referencePreviewImage.removeAttribute("src");
+  referenceImageName.textContent = "";
+  referencePreview.hidden = true;
+}
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("Could not read the selected image."));
+    };
+    reader.onerror = () => reject(reader.error || new Error("Could not read the selected image."));
+    reader.readAsDataURL(file);
+  });
 }
 
 function activeChat() {
@@ -421,7 +463,7 @@ function appendVoiceResponse(content, text) {
 
 function makeMessageElement(
   role, text, isError = false, imageId = null, imageDataUrl = null, sources = [], images = [],
-  allowSpeech = true
+  allowSpeech = true, referenceImageId = null, referenceImageDataUrl = null
 ) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
@@ -445,6 +487,15 @@ function makeMessageElement(
     else loadStoredImage(imageId, image);
     content.appendChild(image);
   }
+  if (role === "user" && !isError && (referenceImageId || referenceImageDataUrl)) {
+    const image = document.createElement("img");
+    image.className = "reference-image";
+    image.alt = "Image reference attached to this prompt";
+    image.loading = "lazy";
+    if (referenceImageDataUrl) image.src = referenceImageDataUrl;
+    else loadStoredImage(referenceImageId, image);
+    content.appendChild(image);
+  }
   if (role === "assistant" && !isError) appendSearchResults(content, sources, images);
   if (role === "assistant" && !isError && allowSpeech) appendVoiceResponse(content, text);
   row.append(avatar, content);
@@ -461,11 +512,11 @@ function renderMessages() {
     for (const message of chat.messages) {
       messages.appendChild(makeMessageElement(
         message.role, message.content, message.isError, message.imageId, message.imageDataUrl,
-        message.sources, message.images
+        message.sources, message.images, true, message.referenceImageId, message.referenceImageDataUrl
       ));
     }
   }
-  chatArea.scrollTop = chatArea.scrollHeight;
+  chatArea.scrollTop = hasMessages ? chatArea.scrollHeight : 0;
 }
 
 function setMobileHistoryOpen(open) {
@@ -490,6 +541,9 @@ window.matchMedia("(max-width: 880px)").addEventListener("change", event => {
 function setBusy(value) {
   busy = value;
   sendBtn.disabled = value;
+  imageModeBtn.disabled = value;
+  referenceBtn.disabled = value;
+  document.getElementById("uploadBtn").disabled = value;
   sendBtn.textContent = value ? "…" : "↑";
   sendBtn.setAttribute("aria-label", value ? "Waiting for Nova" : "Send message");
 }
@@ -518,6 +572,8 @@ function startNewChat() {
   activeChatId = null;
   input.value = "";
   input.style.height = "auto";
+  clearReferenceImage();
+  setImageMode(false);
   showFileStatus("");
   renderMessages();
   renderHistory();
@@ -528,6 +584,8 @@ async function sendMessage(textOverride) {
   if (busy) return;
   const message = (textOverride ?? input.value).trim();
   if (!message) return;
+  const generateImage = imageMode || isImageGenerationRequest(message);
+  const attachedReference = generateImage ? referenceImageDataUrl : null;
 
   let chat = activeChat();
   if (!chat) {
@@ -541,13 +599,24 @@ async function sendMessage(textOverride) {
     activeChatId = chat.id;
   }
 
-  chat.messages.push({role: "user", content: message});
+  const userMessage = {role: "user", content: message};
+  if (attachedReference) userMessage.referenceImageDataUrl = attachedReference;
+  chat.messages.push(userMessage);
   chat.updatedAt = Date.now();
   input.value = "";
   input.style.height = "auto";
   saveChats();
   renderMessages();
-  const generateImage = isImageGenerationRequest(message);
+  if (attachedReference) {
+    storeGeneratedImage(attachedReference).then(imageId => {
+      userMessage.referenceImageId = imageId;
+      delete userMessage.referenceImageDataUrl;
+      saveChats();
+    }).catch(error => {
+      console.warn("Could not save the Nova reference image.", error);
+      showFileStatus("The reference image was used, but this browser could not save it with the chat.", true);
+    });
+  }
   const loading = makeMessageElement(
     "assistant",
     generateImage ? "Creating your image…" : "Thinking…",
@@ -569,7 +638,10 @@ async function sendMessage(textOverride) {
   try {
     const endpoint = generateImage ? "/api/generate-image" : "/api/chat";
     const body = generateImage
-      ? {prompt: buildImagePrompt(chat.messages)}
+      ? {
+        prompt: buildImagePrompt(chat.messages),
+        ...(attachedReference ? {referenceImage: attachedReference} : {})
+      }
       : {
         messages: chat.messages.slice(-24).map(({role, content}) => ({role, content}))
       };
@@ -648,11 +720,18 @@ input.addEventListener("input", () => {
   input.style.height = Math.min(input.scrollHeight, 180) + "px";
 });
 document.querySelectorAll(".suggestion").forEach(button => {
-  button.addEventListener("click", () => sendMessage(button.dataset.prompt));
+  if (button.dataset.prompt) button.addEventListener("click", () => sendMessage(button.dataset.prompt));
+});
+document.getElementById("createImageSuggestion").addEventListener("click", () => {
+  setImageMode(true);
+  input.focus();
 });
 document.getElementById("newChatBtn").addEventListener("click", startNewChat);
 document.getElementById("mobileNewChatBtn").addEventListener("click", startNewChat);
 document.getElementById("uploadBtn").addEventListener("click", () => fileInput.click());
+imageModeBtn.addEventListener("click", () => setImageMode(!imageMode));
+referenceBtn.addEventListener("click", () => referenceImageInput.click());
+document.getElementById("removeReferenceBtn").addEventListener("click", clearReferenceImage);
 
 let cameraStream = null;
 let cameraRequestId = 0;
@@ -789,6 +868,47 @@ fileInput.addEventListener("change", async () => {
     showFileStatus(error.message || "Upload failed.", true);
   } finally {
     fileInput.value = "";
+  }
+});
+
+referenceImageInput.addEventListener("change", async () => {
+  const file = referenceImageInput.files[0];
+  if (!file) return;
+  const mimeTypes = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp"
+  };
+  const extension = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
+  const mimeType = file.type === "image/jpg" ? "image/jpeg" : (file.type || mimeTypes[extension]);
+  if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) {
+    showFileStatus("Choose a JPEG, PNG, or WebP reference image.", true);
+    referenceImageInput.value = "";
+    return;
+  }
+  if (!file.size) {
+    showFileStatus("The selected reference image is empty.", true);
+    referenceImageInput.value = "";
+    return;
+  }
+  if (file.size > 7 * 1024 * 1024) {
+    showFileStatus("Reference images must be 7 MB or smaller.", true);
+    referenceImageInput.value = "";
+    return;
+  }
+  try {
+    const imageDataUrl = await readImageFile(file);
+    const separator = imageDataUrl.indexOf(",");
+    if (separator < 0) throw new Error("Could not read the selected image.");
+    referenceImageDataUrl = `data:${mimeType};base64,${imageDataUrl.slice(separator + 1)}`;
+    referencePreviewImage.src = referenceImageDataUrl;
+    referenceImageName.textContent = file.name;
+    referencePreview.hidden = false;
+    showFileStatus("");
+  } catch (error) {
+    clearReferenceImage();
+    showFileStatus(error.message || "Could not read the selected image.", true);
   }
 });
 

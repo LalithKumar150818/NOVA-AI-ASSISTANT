@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nova AI Assistant</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=11) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=12) }}">
 </head>
 <body>
   <div class="app-shell">
@@ -48,15 +48,28 @@
             <button class="suggestion" data-prompt="Explain Python functions with two examples."><span>⌘</span><strong>Learn something</strong><small>Explain a topic with examples</small></button>
             <button class="suggestion" data-prompt="Give me a beginner-friendly mini project roadmap."><span>↗</span><strong>Plan a project</strong><small>Break an idea into steps</small></button>
             <button class="suggestion" data-prompt="Help me prepare for a technical interview."><span>◇</span><strong>Prepare for interviews</strong><small>Practice questions and answers</small></button>
+            <button id="createImageSuggestion" class="suggestion" type="button"><span>✧</span><strong>Create an image</strong><small>Describe a scene or add a reference photo</small></button>
           </div>
         </div>
         <div id="messages" class="messages" aria-live="polite"></div>
       </section>
       <div class="composer-wrap">
         <div id="fileStatus" class="file-status" hidden></div>
+        <div id="referencePreview" class="reference-preview" hidden>
+          <img id="referencePreviewImage" alt="Image reference preview">
+          <span id="referenceImageName"></span>
+          <button id="removeReferenceBtn" type="button" aria-label="Remove reference image" title="Remove reference image">×</button>
+        </div>
         <div class="composer">
           <input id="fileInput" type="file" accept=".txt,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" hidden>
+          <input id="referenceImageInput" type="file" accept="image/jpeg,image/png,image/webp" hidden>
           <button id="uploadBtn" class="icon-btn" title="Upload TXT, PDF, DOCX, JPG, PNG, or WebP" aria-label="Upload file">＋</button>
+          <button id="imageModeBtn" class="icon-btn image-mode-btn" type="button" aria-pressed="false" title="Create an image from your prompt">
+            <span aria-hidden="true">✧</span><span class="image-mode-label">Image</span>
+          </button>
+          <button id="referenceBtn" class="icon-btn reference-btn" type="button" title="Add an image reference" aria-label="Add an image reference" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          </button>
           <textarea id="messageInput" rows="1" placeholder="Message Nova..." aria-label="Message Nova"></textarea>
           <button id="cameraBtn" class="icon-btn camera-btn" title="Take a photo for Gemini to analyze" aria-label="Take a photo for Gemini">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.5"/></svg>
@@ -66,7 +79,7 @@
           </button>
           <button id="sendBtn" class="send-btn" title="Send message" aria-label="Send message">↑</button>
         </div>
-        <div class="composer-hint">Nova automatically checks current sources and finds images when useful. Upload documents or images to ask about their contents.</div>
+        <div id="composerHint" class="composer-hint">Nova can answer questions, write code, explain concepts, search current sources, and help with images.</div>
       </div>
     </main>
   </div>
@@ -86,6 +99,6 @@
       <p class="camera-note">Your camera stays on only while this window is open. The captured photo is sent to Gemini.</p>
     </div>
   </dialog>
-  <script src="{{ url_for('static', filename='app.js', v=11) }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=12) }}"></script>
 </body>
 </html>
