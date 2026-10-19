@@ -15,8 +15,6 @@ const appShell = document.querySelector(".app-shell");
 const mobileHistoryBtn = document.getElementById("mobileHistoryBtn");
 const closeHistoryBtn = document.getElementById("closeHistoryBtn");
 const historyBackdrop = document.getElementById("historyBackdrop");
-const webSearchBtn = document.getElementById("webSearchBtn");
-const imageSearchBtn = document.getElementById("imageSearchBtn");
 const STORAGE_KEY = "nova-ai-chats-v1";
 const IMAGE_DATABASE = "nova-ai-generated-images-v1";
 const MAX_SAVED_CHATS = 30;
@@ -400,8 +398,30 @@ function appendSearchResults(content, sources, images) {
   }
 }
 
+function appendVoiceResponse(content, text) {
+  if (!("speechSynthesis" in window) || typeof window.SpeechSynthesisUtterance !== "function" || !text.trim()) {
+    return;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "read-aloud-btn";
+  button.textContent = "Read aloud";
+  button.setAttribute("aria-label", "Read this response aloud");
+  button.addEventListener("click", () => {
+    window.speechSynthesis.cancel();
+    const spokenText = text
+      .replace(/```[\s\S]*?```/g, " code example omitted ")
+      .replace(/[`*_#>|]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (spokenText) window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(spokenText));
+  });
+  content.appendChild(button);
+}
+
 function makeMessageElement(
-  role, text, isError = false, imageId = null, imageDataUrl = null, sources = [], images = []
+  role, text, isError = false, imageId = null, imageDataUrl = null, sources = [], images = [],
+  allowSpeech = true
 ) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
@@ -426,6 +446,7 @@ function makeMessageElement(
     content.appendChild(image);
   }
   if (role === "assistant" && !isError) appendSearchResults(content, sources, images);
+  if (role === "assistant" && !isError && allowSpeech) appendVoiceResponse(content, text);
   row.append(avatar, content);
   return row;
 }
@@ -527,11 +548,10 @@ async function sendMessage(textOverride) {
   saveChats();
   renderMessages();
   const generateImage = isImageGenerationRequest(message);
-  const hasSearch = webSearchBtn.getAttribute("aria-pressed") === "true" ||
-    imageSearchBtn.getAttribute("aria-pressed") === "true";
   const loading = makeMessageElement(
     "assistant",
-    generateImage ? "Creating your image…" : (hasSearch ? "Searching and thinking…" : "Thinking…")
+    generateImage ? "Creating your image…" : "Thinking…",
+    false, null, null, [], [], false
   );
   loading.classList.add("loading");
   messages.appendChild(loading);
@@ -551,9 +571,7 @@ async function sendMessage(textOverride) {
     const body = generateImage
       ? {prompt: buildImagePrompt(chat.messages)}
       : {
-        messages: chat.messages.slice(-24).map(({role, content}) => ({role, content})),
-        web_search: webSearchBtn.getAttribute("aria-pressed") === "true",
-        image_search: imageSearchBtn.getAttribute("aria-pressed") === "true"
+        messages: chat.messages.slice(-24).map(({role, content}) => ({role, content}))
       };
     const response = await fetch(endpoint, {
       method: "POST",
@@ -570,6 +588,9 @@ async function sendMessage(textOverride) {
       : null;
     const sources = !generateImage && Array.isArray(data.sources) ? data.sources : [];
     const images = !generateImage && Array.isArray(data.images) ? data.images : [];
+    const searchWarnings = !generateImage && Array.isArray(data.search_warnings)
+      ? data.search_warnings.filter(warning => typeof warning === "string")
+      : [];
     const assistantMessage = {
       role: "assistant",
       content: answer,
@@ -584,6 +605,7 @@ async function sendMessage(textOverride) {
     messages.appendChild(makeMessageElement(
       "assistant", answer, false, null, imageDataUrl, sources, images
     ));
+    if (searchWarnings.length) showFileStatus(searchWarnings.join(" "), true);
     if (imageDataUrl) {
       storeGeneratedImage(imageDataUrl).then(imageId => {
         assistantMessage.imageId = imageId;
@@ -605,12 +627,6 @@ async function sendMessage(textOverride) {
 }
 
 sendBtn.addEventListener("click", () => sendMessage());
-for (const button of [webSearchBtn, imageSearchBtn]) {
-  button.addEventListener("click", () => {
-    const enabled = button.getAttribute("aria-pressed") !== "true";
-    button.setAttribute("aria-pressed", String(enabled));
-  });
-}
 mobileHistoryBtn.addEventListener("click", () => {
   setMobileHistoryOpen(!appShell.classList.contains("history-open"));
 });

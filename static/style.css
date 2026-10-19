@@ -282,19 +282,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .send-btn { color: white; background: #6859e8; font-size: 23px; font-weight: 600; }
 .send-btn:hover { background: #5647d5; }
 .send-btn:disabled { opacity: .5; cursor: wait; }
-.search-tools { display: flex; gap: 8px; width: min(790px, 100%); margin-top: 9px; }
-.search-toggle {
-  padding: 7px 10px;
-  color: #686b7d;
-  background: #fff;
-  border: 1px solid #e5e6ef;
-  border-radius: 9px;
-  font-size: 11px;
-  cursor: pointer;
-}
-.search-toggle:hover { color: #6257d8; border-color: #c9c2ff; }
-.search-toggle[aria-pressed="true"] { color: #5144c6; background: #eeedff; border-color: #c9c2ff; }
-.composer-hint { width: min(790px, 100%); margin-top: 10px; color: #a0a2ae; font-size: 10px; line-height: 1.5; text-align: center; }
+.composer-hint { width: min(790px, 100%); margin-top: 8px; color: #a0a2ae; font-size: 10px; line-height: 1.5; text-align: center; }
+.read-aloud-btn { display: block; margin-top: 10px; padding: 5px 9px; color: #6f65dc; background: #f5f4ff; border: 1px solid #e8e6ff; border-radius: 8px; font-size: 11px; cursor: pointer; }
+.read-aloud-btn:hover { color: #5144c6; background: #eeedff; }
 .source-results { margin-top: 14px; padding: 12px 14px; background: #fff; border: 1px solid var(--line); border-radius: 12px; font-size: 12px; }
 .source-results > strong, .image-results > strong { display: block; margin-bottom: 7px; color: #44465a; font-size: 12px; }
 .source-results ol { display: grid; gap: 8px; margin: 0; padding-left: 20px; }

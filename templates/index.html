@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nova AI Assistant</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=10) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=11) }}">
 </head>
 <body>
   <div class="app-shell">
@@ -43,7 +43,7 @@
         <div id="welcome" class="welcome">
           <div class="hero-icon">✦</div>
           <h1>What can I help with?</h1>
-          <p>Ask anything, create an image, continue a conversation, or upload a document to explore it.</p>
+          <p>Ask anything, explore current information, find helpful images, create an image, or upload a document.</p>
           <div class="suggestions">
             <button class="suggestion" data-prompt="Explain Python functions with two examples."><span>⌘</span><strong>Learn something</strong><small>Explain a topic with examples</small></button>
             <button class="suggestion" data-prompt="Give me a beginner-friendly mini project roadmap."><span>↗</span><strong>Plan a project</strong><small>Break an idea into steps</small></button>
@@ -66,11 +66,7 @@
           </button>
           <button id="sendBtn" class="send-btn" title="Send message" aria-label="Send message">↑</button>
         </div>
-        <div class="search-tools" role="group" aria-label="Search options">
-          <button id="webSearchBtn" class="search-toggle" type="button" aria-pressed="false" title="Search the web and cite sources">⌕ Web search</button>
-          <button id="imageSearchBtn" class="search-toggle" type="button" aria-pressed="false" title="Find relevant images on Wikimedia Commons">▧ Image search</button>
-        </div>
-        <div class="composer-hint">Turn on Web search for current answers with sources, or Image search to see relevant online pictures. Uploaded images and photos are analyzed by Gemini; document text is sent to Groq.</div>
+        <div class="composer-hint">Nova automatically checks current sources and finds images when useful. Upload documents or images to ask about their contents.</div>
       </div>
     </main>
   </div>
@@ -90,6 +86,6 @@
       <p class="camera-note">Your camera stays on only while this window is open. The captured photo is sent to Gemini.</p>
     </div>
   </dialog>
-  <script src="{{ url_for('static', filename='app.js', v=10) }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=11) }}"></script>
 </body>
 </html>

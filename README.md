@@ -1,18 +1,22 @@
 # Nova AI Assistant — Mini Project
 
-A Flask-based AI assistant with text chat, Gemini image generation and photo analysis, browser voice-to-text, and document upload for TXT, PDF, and DOCX files.
+A Flask-based AI assistant with context-aware chat, automatic web and image search, Gemini image generation and image analysis, voice input and optional read-aloud responses, and document upload for TXT, PDF, DOCX, JPG, PNG, and WebP files.
 
 ## Features
 - Responsive desktop and mobile chat interface with multi-turn conversations and recent chats saved in the current browser
-- Mobile-accessible recent-chat drawer; generated image files are stored in browser IndexedDB and chat metadata in local storage
+- Responsive recent-chat sidebar that becomes a left-sliding drawer on phones and tablets, with close button, outside-click backdrop, Escape-key support, and chat selection
+- Start a new conversation from the sidebar or mobile header; generated image files are stored in browser IndexedDB and chat metadata in local storage
 - ChatGPT-inspired composer, starter prompts, and mobile-friendly layout
 - Clearly formatted AI answers that follow the language explicitly requested for each turn, or otherwise the language of the user's latest message
 - AI answers through the Groq API
+- Automatic web search through DuckDuckGo for current events, recent information, news, releases, prices, and other time-sensitive questions; cited sources are displayed with the answer
+- Automatic image search through Wikimedia Commons when users ask to see pictures, photos, or visual references; thumbnails, titles, and attribution links are displayed in chat
 - Create images from ordinary prompts through Gemini image generation and display them in the conversation
 - Display generated images as soon as Gemini responds, while saving them to browser storage in the background
 - Capture a photo in the browser and ask Gemini to describe or analyze it
-- Voice-to-text in supported browsers (Chrome/Edge recommended)
+- Voice-to-text in supported browsers (Chrome/Edge recommended) and click-to-read AI responses where browser speech synthesis is available
 - Upload TXT, text-based PDF, and DOCX; then ask questions about the extracted text
+- Upload JPG, PNG, and WebP images and ask Gemini questions about their contents
 - Clear uploaded document context
 - API key loaded from `.env`, never exposed in frontend JavaScript or hard-coded in the app
 
@@ -22,6 +26,7 @@ A Flask-based AI assistant with text chat, Gemini image generation and photo ana
 - Groq Python SDK: text chat API
 - Google Gemini API: photo analysis
 - Google Gemini image model: image generation
+- DuckDuckGo HTML search and Wikimedia Commons API: automatic web and image search (no search API key required)
 - pypdf and python-docx: text extraction
 - Browser Web Speech API: microphone input
 
@@ -92,8 +97,25 @@ A Flask-based AI assistant with text chat, Gemini image generation and photo ana
 8. Upload a TXT, text-based PDF, or DOCX file.
 9. Ask: `Summarize the uploaded document in five bullet points.`
 10. Click `Clear document` to remove document context from the session.
+11. Ask `What are the latest Python releases?` and inspect the numbered citations and source links. No search control is needed.
+12. Ask `Show me pictures of the aurora borealis.` and open an image result to view its Wikimedia Commons attribution page.
+13. Ask a stable question such as `Explain Python functions with an example.` and confirm Nova answers without requiring live search.
+14. Upload a JPG, PNG, or WebP image and ask a question about it; Gemini analyzes the image in the context of the current chat.
+15. Select **Read aloud** under an AI response where browser speech synthesis is supported.
 
-Chat history is saved locally in the browser and is not shared across browsers or devices. This lets a user reopen chats on the same phone/browser; sharing history between a phone and a computer requires user accounts and a server-side database, neither of which this demo currently has. Generated image files are stored separately in browser IndexedDB to avoid filling the smaller local-storage quota, without delaying the first display of the image. Image-generation time itself depends on Gemini's model, service load, and network; the app cannot guarantee a shorter provider generation time. Photo data is sent to Gemini for analysis; the app does not store the captured photo. Text chat and uploaded document context continue to use Groq. Nova's response quality depends on the configured Groq model and provider limits; this project does not run or include ChatGPT, Claude, or Gemini chat models.
+## Run the tests
+From the `ai_assistant_mini_project` folder with the virtual environment activated:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The search behavior is automatic and heuristic: Nova uses web search for time-sensitive wording and image search for explicit requests to see or find pictures. Stable questions use the configured AI model's knowledge. Search provider failures do not prevent a regular AI response; the interface displays a warning when live results could not be fetched.
+
+## Mobile sidebar
+At widths up to 880px, tap the menu icon beside the Nova header to slide in Recent Chats from the left. Choose a saved conversation or use **New chat** to close the drawer and return to the conversation. Close it with the close icon, by tapping the shaded area outside the sidebar, or with Escape. At wider desktop widths, the sidebar remains visible beside the chat. Chat history is stored in the current browser.
+
+Chat history is saved locally in the browser and is not shared across browsers or devices. This lets a user reopen chats on the same phone/browser; sharing history between a phone and a computer requires user accounts and a server-side database, neither of which this demo currently has. Generated image files are stored separately in browser IndexedDB to avoid filling the smaller local-storage quota, without delaying the first display of the image. Image-generation time itself depends on Gemini's model, service load, and network; the app cannot guarantee a shorter provider generation time. Captured and uploaded photos are sent to Gemini for analysis and are held in the app's in-memory demo document store until cleared or the server restarts. Text chat and uploaded document context continue to use Groq. Web results come from DuckDuckGo and image results from Wikimedia Commons; source excerpts are reference material, not guaranteed fact-checking. Search results depend on upstream availability and may be incomplete or out of date. Nova's response quality depends on the configured model and provider limits; this project does not run or include ChatGPT, Claude, or Gemini chat models, and cannot guarantee equivalent capabilities.
 
 ## Deploying
 
@@ -104,6 +126,7 @@ Deploy the `ai_assistant_mini_project` folder as a Python web service on a host 
 3. Use `gunicorn app:app` as the start command.
 4. Configure `GROQ_API_KEY`, `GEMINI_API_KEY`, and a unique `FLASK_SECRET_KEY` as private environment variables. Set `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` only if you need to use a different model. Do not put secrets in source code or commit `.env`.
 5. Enable HTTPS on the host. Browser camera and microphone access require localhost or a secure (HTTPS) origin.
+6. Redeploy/restart the service after uploading or pushing the updated project files. For a Git-based deployment, push the updated source to the configured branch and trigger the host's deployment; for a ZIP/manual deployment, upload the updated project folder and restart the web service.
 
 Generate a secret locally with `python -c "import secrets; print(secrets.token_hex(32))"` and add the result as `FLASK_SECRET_KEY` in the host settings. Never use the example secret in a public deployment. The included Gunicorn command runs without Flask's development server or debugger. This demo stores conversations in each visitor's browser, not on the server; hosting it does not synchronize chat history across devices.
 
@@ -116,11 +139,12 @@ recognition.lang = "en-IN";
 
 to `te-IN` for Telugu voice input, if your browser supports it. This setting affects speech recognition only. For chat, ask for a response in any language (for example, "Reply in Telugu") or simply write your question in that language. Nova is instructed to follow the language requested for the current turn, and otherwise respond in the language of your latest message; support for a specific language depends on the configured AI provider/model.
 
-Voice input is browser-dependent. The app uses speech recognition to convert speech into text; it does not include a separate spoken audio reply (text-to-speech) yet.
+Voice features are browser-dependent. The app uses speech recognition to convert speech into text and the browser's speech synthesis to read an answer aloud when the user selects **Read aloud**. Text-to-speech is not automatic.
 
 ## File upload notes
 - Maximum request size: 10 MB
-- Supported: `.txt`, `.pdf`, `.docx`
+- Supported: `.txt`, `.pdf`, `.docx`, `.jpg`, `.jpeg`, `.png`, `.webp`
+- Uploaded images are limited to 7 MB and are analyzed by Gemini; document uploads are limited by the 10 MB total request size.
 - Image-only/scanned PDFs are not OCR-processed in this starter project.
 - The app extracts up to 15,000 characters for document context to limit prompt size.
 - The extracted document text is sent to the AI provider when you ask a question. Do not upload confidential documents.
@@ -132,6 +156,7 @@ Voice input is browser-dependent. The app uses speech recognition to convert spe
 - Image generation fails: check `GEMINI_API_KEY`, confirm `GEMINI_IMAGE_MODEL` is available to your account (default `gemini-2.5-flash-image`), and review the error shown in the chat.
 - `401` / authentication error: create a valid key in Groq Console and paste it without quotes or extra spaces.
 - Gemini photo analysis fails: check `GEMINI_API_KEY`, confirm the configured `GEMINI_MODEL` is available, and try a smaller photo.
+- Web or image search fails: check the internet connection and retry; search providers may temporarily rate-limit or change their response format.
 - Model error: check which models are currently available for your Groq account, then update `GROQ_MODEL` in `.env`.
 - Microphone does not work: try Chrome/Edge, use `http://127.0.0.1:5000`, and allow microphone access.
 - Camera does not work: use Chrome/Edge on `http://127.0.0.1:5000` or HTTPS, allow camera access in the browser, and check that another app is not using the camera.
