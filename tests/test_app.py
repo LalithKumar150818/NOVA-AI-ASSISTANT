@@ -3,6 +3,7 @@ import json
 import os
 import unittest
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 
@@ -44,7 +45,7 @@ class GenerateImageTests(unittest.TestCase):
         upstream_response = MagicMock()
         upstream_response.__enter__.return_value.read.return_value = json.dumps(response_body).encode("utf-8")
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "GEMINI_IMAGE_MODEL": ""}):
             with patch("app.urlopen", return_value=upstream_response) as urlopen:
                 response = self.client.post("/api/generate-image", json={"prompt": "A watercolor fox"})
 
@@ -56,8 +57,83 @@ class GenerateImageTests(unittest.TestCase):
             "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii"),
         )
         request = urlopen.call_args.args[0]
-        self.assertIn("gemini-2.5-flash-image:generateContent", request.full_url)
+        self.assertIn("gemini-3.1-flash-lite-image:generateContent", request.full_url)
         self.assertEqual(request.get_header("X-goog-api-key"), "test-key")
+        request_body = json.loads(request.data)
+        self.assertEqual(request_body["generationConfig"]["responseModalities"], ["TEXT", "IMAGE"])
+
+    def test_applies_supported_aspect_ratio_to_image_generation(self):
+        response_body = {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": base64.b64encode(b"generated image").decode("ascii"),
+                        },
+                    }],
+                },
+            }],
+        }
+        upstream_response = MagicMock()
+        upstream_response.__enter__.return_value.read.return_value = json.dumps(response_body).encode("utf-8")
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            with patch("app.urlopen", return_value=upstream_response) as urlopen:
+                response = self.client.post(
+                    "/api/generate-image",
+                    json={"prompt": "A mountain lake", "aspectRatio": "16:9"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["generationConfig"]["imageConfig"]["aspectRatio"], "16:9")
+
+    def test_uses_uploaded_image_as_automatic_generation_reference(self):
+        reference_bytes = b"uploaded reference image"
+        generated_bytes = b"generated image"
+        upstream_response = MagicMock()
+        upstream_response.__enter__.return_value.read.return_value = json.dumps({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": base64.b64encode(generated_bytes).decode("ascii"),
+                        },
+                    }],
+                },
+            }],
+        }).encode("utf-8")
+        client = app.test_client()
+        upload_response = client.post(
+            "/api/upload",
+            data={"file": (BytesIO(reference_bytes), "reference.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_response.status_code, 200)
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            with patch("app.urlopen", return_value=upstream_response) as urlopen:
+                response = client.post(
+                    "/api/generate-image",
+                    json={"prompt": "Create an illustration based on my uploaded photo"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        parts = json.loads(urlopen.call_args.args[0].data)["contents"][0]["parts"]
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[1]["inlineData"]["mimeType"], "image/png")
+        self.assertEqual(base64.b64decode(parts[1]["inlineData"]["data"]), reference_bytes)
+
+    def test_rejects_unsupported_image_aspect_ratio(self):
+        response = self.client.post(
+            "/api/generate-image",
+            json={"prompt": "A mountain lake", "aspectRatio": {"invalid": True}},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("aspect ratio", response.get_json()["error"])
 
     def test_rejects_provider_response_without_an_image(self):
         response_body = {"candidates": [{"content": {"parts": [{"text": "No image"}]}}]}
@@ -97,7 +173,7 @@ class GenerateImageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         request_body = json.loads(urlopen.call_args.args[0].data)
         generation_prompt = request_body["contents"][0]["parts"][0]["text"]
-        self.assertIn("explicitly asks for", generation_prompt)
+        self.assertIn("explicitly requested", generation_prompt)
         self.assertIn("దయచేసి తెలుగులో పూల చిత్రం సృష్టించు", generation_prompt)
 
     def test_uses_reference_image_as_multimodal_generation_input(self):
@@ -172,6 +248,30 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(sent_messages[-1]["content"], "Show a short example.")
         self.assertEqual(response.get_json()["answer"], "Here is the follow-up.")
 
+    def test_streams_groq_response_as_server_sent_events(self):
+        groq_client = MagicMock()
+        groq_client.chat.completions.create.return_value = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello"))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=" there."))]),
+        ]
+
+        with patch.dict(os.environ, {"GROQ_API_KEY": "test-key"}):
+            with patch("app.Groq", return_value=groq_client):
+                response = app.test_client().post(
+                    "/api/chat",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": True,
+                    },
+                    buffered=True,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/event-stream")
+        self.assertIn('"type": "delta", "content": "Hello"', response.get_data(as_text=True))
+        self.assertIn('"type": "done"', response.get_data(as_text=True))
+        self.assertTrue(groq_client.chat.completions.create.call_args.kwargs["stream"])
+
     def test_photo_analysis_prompt_uses_the_requested_language_rules(self):
         response_body = {
             "candidates": [{
@@ -236,6 +336,49 @@ class ChatTests(unittest.TestCase):
         self.assertIn("untrusted reference data", system_message)
         self.assertIn("A useful factual excerpt.", system_message)
 
+    def test_web_and_image_search_run_concurrently(self):
+        from threading import Barrier
+
+        groq_client = MagicMock()
+        groq_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="Here are the current images."))
+        ]
+        search_barrier = Barrier(2)
+        web_results = [{"title": "Current source", "url": "https://example.com", "snippet": "Current."}]
+        image_results = [{
+            "title": "Current image",
+            "thumbnail": "https://upload.wikimedia.org/example.jpg",
+            "url": "https://commons.wikimedia.org/wiki/File:Example.jpg",
+            "source": "Wikimedia Commons",
+        }]
+
+        def web_search(_query):
+            search_barrier.wait(timeout=2)
+            return web_results
+
+        def image_search(_query):
+            search_barrier.wait(timeout=2)
+            return image_results
+
+        with patch.dict(os.environ, {"GROQ_API_KEY": "test-key"}):
+            with patch("app.Groq", return_value=groq_client):
+                with patch("app.search_web", side_effect=web_search):
+                    with patch("app.search_images", side_effect=image_search):
+                        response = app.test_client().post(
+                            "/api/chat",
+                            json={
+                                "messages": [{
+                                    "role": "user",
+                                    "content": "Show the latest pictures of aurora",
+                                }],
+                            },
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sources"], web_results)
+        self.assertEqual(response.get_json()["images"], image_results)
+        self.assertEqual(response.get_json()["search_warnings"], [])
+
     def test_search_intent_selects_tools_from_the_latest_user_message(self):
         current_question = select_search_tools([
             {"role": "user", "content": "Explain Python functions."},
@@ -267,12 +410,15 @@ class ChatTests(unittest.TestCase):
         self.assertFalse(ordinary_question["images"])
         self.assertFalse(image_creation["images"])
 
-    def test_search_controls_are_not_rendered(self):
+    def test_search_and_image_generation_controls_are_not_rendered(self):
         response = app.test_client().get("/")
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(b'id="webSearchBtn"', response.data)
         self.assertNotIn(b'id="imageSearchBtn"', response.data)
+        self.assertNotIn(b'id="imageModeBtn"', response.data)
+        self.assertNotIn(b'id="createImageSuggestion"', response.data)
+        self.assertNotIn(b'id="imageAspect"', response.data)
 
     def test_rejects_non_boolean_search_options(self):
         response = app.test_client().post(

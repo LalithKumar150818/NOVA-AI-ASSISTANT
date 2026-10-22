@@ -5,13 +5,17 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
 ## Features
 - Responsive dark desktop and mobile chat interface with multi-turn conversations and recent chats saved in the current browser
 - Responsive recent-chat sidebar that becomes a left-sliding drawer on phones and tablets, with close button, outside-click backdrop, Escape-key support, and chat selection
-- Start a new conversation from the sidebar or mobile header; generated images and image references are stored in browser IndexedDB and chat metadata in local storage
-- ChatGPT-inspired dark composer, starter prompts, image-creation mode, and mobile-friendly layout
+- Start, reopen, rename, and delete conversations; edit an earlier user message to replace its following responses
+- Generated images and image references are stored in browser IndexedDB and chat metadata in local storage
+- ChatGPT-inspired dark composer, starter prompts, and mobile-friendly layout
 - Clearly formatted AI answers that follow the language explicitly requested for each turn, or otherwise the language of the user's latest message
-- AI answers through the Groq API
+- Progressively streamed AI answers through the Groq API, with readable provider error messages
+- Markdown responses with code syntax coloring, copy-code buttons, and generated-image downloads
 - Automatic web search through DuckDuckGo for current events, recent information, news, releases, prices, and other time-sensitive questions; cited sources are displayed with the answer
 - Automatic image search through Wikimedia Commons when users ask to see pictures, photos, or visual references; thumbnails, titles, and attribution links are displayed in chat
-- Create images from text prompts through Gemini image generation; optionally attach a JPEG, PNG, or WebP reference photo to guide the result
+- Automatically route explicit image-creation requests from the normal message composer to Gemini image generation; ordinary questions remain text chat
+- Use Gemini 3.1 Flash Lite Image by default for image creation; override `GEMINI_IMAGE_MODEL` when your account needs a different supported model
+- Display generated images in the conversation with a download link; uploaded images are used as generation guidance when available
 - Display generated images as soon as Gemini responds, while saving them to browser storage in the background
 - Capture a photo in the browser and ask Gemini to describe or analyze it
 - Voice-to-text in supported browsers (Chrome/Edge recommended) and click-to-read AI responses where browser speech synthesis is available
@@ -73,7 +77,7 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
    Copy-Item .env.example .env
    ```
 
-8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the default Groq model `openai/gpt-oss-120b`; photo analysis uses `gemini-2.5-flash`; image generation uses `gemini-2.5-flash-image`. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable for your account.
+8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the configured Groq model (default `openai/gpt-oss-120b`); photo analysis uses `gemini-2.5-flash`; image generation defaults to `gemini-3.1-flash-lite-image`, Google's fastest image-generation option. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable for your account.
 
 9. Start the app:
 
@@ -89,8 +93,9 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
 1. Ask: `Explain Python loops with two examples.`
 2. Ask a follow-up question and confirm Nova uses earlier messages in the same chat.
 3. Click `New chat`, then switch to an earlier conversation from the Recent Chats list.
-4. Turn on **Image** in the composer and ask: `Create a friendly robot reading under a tree.` The image should appear in the chat.
-5. While **Image** mode is active, attach a JPEG, PNG, or WebP with the picture button, then describe how it should guide the result (for example, `Keep the same subject, but make it a watercolor illustration.`).
+   Rename or delete a conversation from its sidebar controls. Use **Edit** under a user message to revise it and regenerate the following response.
+4. In the regular message composer, ask: `Generate an image of a friendly robot reading under a tree.` Nova should generate and display an actual image in the chat. Use **Download image** below the generated image to save it.
+5. Upload a JPEG, PNG, or WebP using the upload button, then ask Nova to create an image guided by the uploaded photo.
 6. On a phone-sized browser window, tap `Chats` and reopen a recent conversation.
 7. Click the microphone and allow access; speak a short question.
 8. Click the camera button, allow camera access, take a photo, and ask Gemini a question about it.
@@ -115,7 +120,7 @@ The search behavior is automatic and heuristic: Nova uses web search for time-se
 ## Mobile sidebar
 At widths up to 880px, tap the menu icon beside the Nova header to slide in Recent Chats from the left. Choose a saved conversation or use **New chat** to close the drawer and return to the conversation. Close it with the close icon, by tapping the shaded area outside the sidebar, or with Escape. At wider desktop widths, the sidebar remains visible beside the chat. Chat history is stored in the current browser.
 
-Chat history is saved locally in the browser and is not shared across browsers or devices. This lets a user reopen chats on the same phone/browser; sharing history between a phone and a computer requires user accounts and a server-side database, neither of which this demo currently has. Generated images and reference photos used in chat history are stored separately in browser IndexedDB to avoid filling the smaller local-storage quota, without delaying the first display of generated images. Image-generation time itself depends on Gemini's model, service load, and network; the app cannot guarantee a shorter provider generation time. Captured and uploaded photos are sent to Gemini for analysis and are held in the app's in-memory demo document store until cleared or the server restarts. Text chat and uploaded document context continue to use Groq. Web results come from DuckDuckGo and image results from Wikimedia Commons; source excerpts are reference material, not guaranteed fact-checking. Search results depend on upstream availability and may be incomplete or out of date. Nova's response quality depends on the configured AI models and provider limits; this project does not run or include ChatGPT, Claude, or Gemini chat models, and cannot guarantee equivalent capabilities.
+Chat history is saved locally in the browser and is not shared across browsers or devices. This lets a user reopen chats on the same phone/browser; sharing history between a phone and a computer requires user accounts and a server-side database, neither of which this demo currently has. Generated images and reference photos used in chat history are stored separately in browser IndexedDB to avoid filling the smaller local-storage quota, without delaying the first display of generated images. Image-generation time still depends on Gemini service load, network, and account limits; this project defaults to Google's fastest listed image model but cannot guarantee provider latency. Explicit English image-creation prompts are detected by the web interface and sent to Gemini; ordinary prompts use Groq. Captured and uploaded photos are sent to Gemini for analysis and are held in the app's in-memory demo document store until cleared or the server restarts. An uploaded photo is also supplied as visual guidance to the image-generation API. Groq text responses stream progressively in the web UI; non-streaming API clients retain the JSON response format. Web and image searches use DuckDuckGo and Wikimedia Commons, respectively, and run concurrently when both are requested. Search excerpts are reference material, not guaranteed fact-checking. Search results depend on upstream availability and may be incomplete or out of date. Nova's response quality depends on the configured AI models and provider limits; this project does not run or include ChatGPT, Claude, or Gemini chat models, and cannot guarantee equivalent capabilities.
 
 ## Deploying
 
@@ -153,7 +158,7 @@ Voice features are browser-dependent. The app uses speech recognition to convert
 - `npm run dev` fails with `ENOENT` for `package.json`: this is a Python/Flask project, not a Node.js project. From the `ai_assistant_mini_project` folder, start it with `python app.py`, then open http://127.0.0.1:5000.
 - `ModuleNotFoundError`: confirm `.venv` is active and run `pip install -r requirements.txt`.
 - `GROQ_API_KEY is missing`: check that `.env` is in the project folder or the parent folder, and restart `python app.py`.
-- Image generation or reference-photo generation fails: check `GEMINI_API_KEY`, confirm `GEMINI_IMAGE_MODEL` is available to your account (default `gemini-2.5-flash-image`), use a JPEG, PNG, or WebP reference smaller than 7 MB, and review the error shown in the chat.
+- Image generation or reference-photo generation fails: check `GEMINI_API_KEY`, confirm `GEMINI_IMAGE_MODEL` is available to your account (default `gemini-3.1-flash-lite-image`), use a JPEG, PNG, or WebP reference smaller than 7 MB, and review the error shown in the chat.
 - `401` / authentication error: create a valid key in Groq Console and paste it without quotes or extra spaces.
 - Gemini photo analysis fails: check `GEMINI_API_KEY`, confirm the configured `GEMINI_MODEL` is available, and try a smaller photo.
 - Web or image search fails: check the internet connection and retry; search providers may temporarily rate-limit or change their response format.

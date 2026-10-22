@@ -4,13 +4,8 @@ const messages = document.getElementById("messages");
 const input = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const fileInput = document.getElementById("fileInput");
-const referenceImageInput = document.getElementById("referenceImageInput");
 const fileStatus = document.getElementById("fileStatus");
-const referencePreview = document.getElementById("referencePreview");
-const referencePreviewImage = document.getElementById("referencePreviewImage");
-const referenceImageName = document.getElementById("referenceImageName");
-const imageModeBtn = document.getElementById("imageModeBtn");
-const referenceBtn = document.getElementById("referenceBtn");
+const cancelEditBtn = document.getElementById("cancelEditBtn");
 const composerHint = document.getElementById("composerHint");
 const voiceBtn = document.getElementById("voiceBtn");
 const cameraBtn = document.getElementById("cameraBtn");
@@ -18,6 +13,9 @@ const cameraDialog = document.getElementById("cameraDialog");
 const cameraPreview = document.getElementById("cameraPreview");
 const capturePhotoBtn = document.getElementById("capturePhotoBtn");
 const historyList = document.getElementById("chatHistory");
+const confirmDialog = document.getElementById("confirmDialog");
+const confirmDialogMessage = document.getElementById("confirmDialogMessage");
+const confirmDialogAction = document.getElementById("confirmDialogAction");
 const appShell = document.querySelector(".app-shell");
 const mobileHistoryBtn = document.getElementById("mobileHistoryBtn");
 const closeHistoryBtn = document.getElementById("closeHistoryBtn");
@@ -28,8 +26,9 @@ const MAX_SAVED_CHATS = 30;
 let chats = loadChats();
 let activeChatId = null;
 let busy = false;
-let imageMode = false;
-let referenceImageDataUrl = null;
+let editingMessageIndex = null;
+let editingChatId = null;
+let confirmationResolver = null;
 const imageObjectUrls = new Set();
 
 function loadChats() {
@@ -100,7 +99,7 @@ async function storeGeneratedImage(dataUrl) {
   }
 }
 
-async function loadStoredImage(imageId, imageElement) {
+async function loadStoredImage(imageId, imageElement, downloadLink = null) {
   try {
     const database = await openImageDatabase();
     let image;
@@ -127,6 +126,11 @@ async function loadStoredImage(imageId, imageElement) {
     }
     imageObjectUrls.add(objectUrl);
     imageElement.src = objectUrl;
+    if (downloadLink) {
+      downloadLink.href = objectUrl;
+      const extension = image.type === "image/jpeg" ? "jpg" : image.type === "image/webp" ? "webp" : "png";
+      downloadLink.download = `nova-generated-image.${extension}`;
+    }
   } catch (error) {
     if (imageElement.isConnected) {
       showFileStatus(error.message || "Could not load a saved generated image.", true);
@@ -145,58 +149,102 @@ function showFileStatus(text, isError = false) {
   fileStatus.classList.toggle("is-error", isError);
 }
 
-function setImageMode(enabled) {
-  imageMode = enabled;
-  imageModeBtn.setAttribute("aria-pressed", String(enabled));
-  imageModeBtn.classList.toggle("active", enabled);
-  referenceBtn.hidden = !enabled;
-  input.placeholder = enabled ? "Describe the image you want to create..." : "Message Nova...";
-  composerHint.textContent = enabled
-    ? "Describe your image, or add a reference photo to guide its subject, style, or composition."
-    : "Nova can answer questions, write code, explain concepts, search current sources, and help with images.";
-}
-
-function clearReferenceImage() {
-  referenceImageDataUrl = null;
-  referenceImageInput.value = "";
-  referencePreviewImage.removeAttribute("src");
-  referenceImageName.textContent = "";
-  referencePreview.hidden = true;
-}
-
-function readImageFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") resolve(reader.result);
-      else reject(new Error("Could not read the selected image."));
-    };
-    reader.onerror = () => reject(reader.error || new Error("Could not read the selected image."));
-    reader.readAsDataURL(file);
-  });
-}
-
 function activeChat() {
   return chats.find(chat => chat.id === activeChatId);
 }
 
 function renderHistory() {
   historyList.replaceChildren();
+  if (!chats.length) {
+    const emptyState = document.createElement("p");
+    emptyState.className = "history-empty";
+    emptyState.textContent = "Your conversations will appear here.";
+    historyList.appendChild(emptyState);
+    return;
+  }
   for (const chat of chats) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "history-item" + (chat.id === activeChatId ? " active" : "");
-    button.textContent = chat.title;
-    button.title = chat.title;
-    button.addEventListener("click", () => {
+    const row = document.createElement("div");
+    row.className = "history-row";
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "history-item" + (chat.id === activeChatId ? " active" : "");
+    openButton.textContent = chat.title;
+    openButton.title = chat.title;
+    openButton.addEventListener("click", () => {
       if (busy) return;
+      cancelMessageEdit();
       activeChatId = chat.id;
       input.value = "";
       renderMessages();
       renderHistory();
       setMobileHistoryOpen(false);
     });
-    historyList.appendChild(button);
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const renameButton = document.createElement("button");
+    renameButton.type = "button";
+    renameButton.className = "history-action";
+    renameButton.textContent = "Rename";
+    renameButton.setAttribute("aria-label", `Rename chat: ${chat.title}`);
+    renameButton.addEventListener("click", event => {
+      event.stopPropagation();
+      if (busy) return;
+      const form = document.createElement("form");
+      form.className = "history-rename-form";
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.value = chat.title;
+      titleInput.maxLength = 80;
+      titleInput.required = true;
+      titleInput.setAttribute("aria-label", "Conversation name");
+      const saveButton = document.createElement("button");
+      saveButton.type = "submit";
+      saveButton.textContent = "Save";
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.textContent = "Cancel";
+      cancelButton.addEventListener("click", () => renderHistory());
+      form.append(titleInput, saveButton, cancelButton);
+      openButton.hidden = true;
+      actions.hidden = true;
+      row.appendChild(form);
+      form.addEventListener("submit", submitEvent => {
+        submitEvent.preventDefault();
+        const nextTitle = titleInput.value.trim();
+        if (!nextTitle) {
+          titleInput.setCustomValidity("Enter a conversation name.");
+          titleInput.reportValidity();
+          return;
+        }
+        chat.title = nextTitle;
+        chat.updatedAt = Date.now();
+        saveChats();
+      });
+      titleInput.focus();
+      titleInput.select();
+    });
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "history-action";
+    deleteButton.textContent = "Delete";
+    deleteButton.setAttribute("aria-label", `Delete chat: ${chat.title}`);
+    deleteButton.addEventListener("click", event => {
+      event.stopPropagation();
+      if (busy) return;
+      requestConfirmation(`Delete "${chat.title}" and its messages?`, "Delete").then(confirmed => {
+        if (!confirmed) return;
+        chats = chats.filter(item => item.id !== chat.id);
+        if (activeChatId === chat.id) {
+          activeChatId = null;
+          cancelMessageEdit();
+          renderMessages();
+        }
+        saveChats();
+      });
+    });
+    actions.append(renameButton, deleteButton);
+    row.append(openButton, actions);
+    historyList.appendChild(row);
   }
 }
 
@@ -365,6 +413,56 @@ function renderMarkdown(text) {
   return blocks.join("");
 }
 
+function highlightCode(code, language) {
+  const supportedLanguages = new Set([
+    "bash", "c", "cpp", "css", "go", "html", "java", "javascript", "js",
+    "json", "python", "py", "rust", "sql", "typescript", "ts", "xml", "yaml", "yml"
+  ]);
+  if (!supportedLanguages.has((language || "").toLowerCase())) return escapeHTML(code);
+  const tokens = /\b(?:async|await|break|case|class|const|continue|def|else|elif|export|extends|false|for|from|function|if|import|in|interface|let|new|null|public|return|static|true|try|var|while|with|yield|SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|TABLE|AND|OR|NOT)\b|\/\*[\s\S]*?\*\/|\/\/[^\n]*|#[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:print|console|len|range|str|int|float|list|dict|set|tuple|bool|super|self)\b|\b\d+(?:\.\d+)?\b/g;
+  let result = "";
+  let lastIndex = 0;
+  for (const match of code.matchAll(tokens)) {
+    result += escapeHTML(code.slice(lastIndex, match.index));
+    const token = match[0];
+    let kind = "keyword";
+    if (/^(?:\/\*|\/\/|#)/.test(token)) kind = "comment";
+    else if (/^(?:"|'|`)/.test(token)) kind = "string";
+    else if (/^(?:print|console|len|range|str|int|float|list|dict|set|tuple|bool|super|self)$/.test(token)) kind = "builtin";
+    else if (/^\d/.test(token)) kind = "number";
+    result += `<span class="code-${kind}">${escapeHTML(token)}</span>`;
+    lastIndex = match.index + token.length;
+  }
+  return result + escapeHTML(code.slice(lastIndex));
+}
+
+function addCodeBlockControls(content) {
+  content.querySelectorAll("pre").forEach(pre => {
+    const code = pre.querySelector("code");
+    if (!code) return;
+    const language = [...code.classList]
+      .find(className => className.startsWith("language-"))
+      ?.slice("language-".length) || "";
+    code.innerHTML = highlightCode(code.textContent || "", language);
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "copy-code-btn";
+    copyButton.textContent = "Copy";
+    copyButton.setAttribute("aria-label", "Copy code block");
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(code.textContent || "");
+        copyButton.textContent = "Copied";
+        window.setTimeout(() => { copyButton.textContent = "Copy"; }, 1500);
+      } catch (error) {
+        console.warn("Could not copy the Nova code block.", error);
+        showFileStatus("Could not copy code. Check clipboard permission and try again.", true);
+      }
+    });
+    pre.appendChild(copyButton);
+  });
+}
+
 function getExternalUrl(value, permittedHost) {
   try {
     const url = new URL(value);
@@ -463,7 +561,7 @@ function appendVoiceResponse(content, text) {
 
 function makeMessageElement(
   role, text, isError = false, imageId = null, imageDataUrl = null, sources = [], images = [],
-  allowSpeech = true, referenceImageId = null, referenceImageDataUrl = null
+  allowSpeech = true, referenceImageId = null, referenceImageDataUrl = null, messageIndex = null
 ) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
@@ -475,6 +573,7 @@ function makeMessageElement(
   content.className = "message-content";
   if (role === "assistant" && !isError && !row.classList.contains("loading")) {
     content.innerHTML = text ? renderMarkdown(text) : "";
+    addCodeBlockControls(content);
   } else {
     content.textContent = text;
   }
@@ -483,9 +582,20 @@ function makeMessageElement(
     image.className = "generated-image";
     image.alt = text || "Generated image";
     image.loading = "lazy";
-    if (imageDataUrl) image.src = imageDataUrl;
-    else loadStoredImage(imageId, image);
     content.appendChild(image);
+    const downloadLink = document.createElement("a");
+    downloadLink.className = "download-image-link";
+    downloadLink.textContent = "Download image";
+    const mimeExtension = imageDataUrl?.match(/^data:image\/(jpeg|png|webp);/)?.[1];
+    downloadLink.download = `nova-generated-image.${mimeExtension === "jpeg" ? "jpg" : mimeExtension || "png"}`;
+    if (imageDataUrl) {
+      image.src = imageDataUrl;
+      downloadLink.href = imageDataUrl;
+    } else {
+      loadStoredImage(imageId, image, downloadLink);
+    }
+    image.addEventListener("load", () => { downloadLink.href = image.currentSrc || image.src; });
+    content.appendChild(downloadLink);
   }
   if (role === "user" && !isError && (referenceImageId || referenceImageDataUrl)) {
     const image = document.createElement("img");
@@ -498,6 +608,15 @@ function makeMessageElement(
   }
   if (role === "assistant" && !isError) appendSearchResults(content, sources, images);
   if (role === "assistant" && !isError && allowSpeech) appendVoiceResponse(content, text);
+  if (role === "user" && !isError && messageIndex !== null) {
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "edit-message-btn";
+    editButton.textContent = "Edit";
+    editButton.setAttribute("aria-label", "Edit this message");
+    editButton.addEventListener("click", () => beginEditMessage(messageIndex));
+    content.appendChild(editButton);
+  }
   row.append(avatar, content);
   return row;
 }
@@ -512,7 +631,8 @@ function renderMessages() {
     for (const message of chat.messages) {
       messages.appendChild(makeMessageElement(
         message.role, message.content, message.isError, message.imageId, message.imageDataUrl,
-        message.sources, message.images, true, message.referenceImageId, message.referenceImageDataUrl
+        message.sources, message.images, true, message.referenceImageId, message.referenceImageDataUrl,
+        message.role === "user" ? chat.messages.indexOf(message) : null
       ));
     }
   }
@@ -532,6 +652,23 @@ function setMobileHistoryOpen(open) {
   }
 }
 
+function requestConfirmation(message, actionLabel) {
+  if (confirmDialog.open) return Promise.resolve(false);
+  confirmDialogMessage.textContent = message;
+  confirmDialogAction.textContent = actionLabel;
+  confirmationResolver = null;
+  const result = new Promise(resolve => { confirmationResolver = resolve; });
+  confirmDialog.showModal();
+  return result;
+}
+
+confirmDialog.addEventListener("close", () => {
+  if (!confirmationResolver) return;
+  const resolve = confirmationResolver;
+  confirmationResolver = null;
+  resolve(confirmDialog.returnValue === "confirm");
+});
+
 window.matchMedia("(max-width: 880px)").addEventListener("change", event => {
   if (!event.matches && appShell.classList.contains("history-open")) {
     setMobileHistoryOpen(false);
@@ -541,8 +678,6 @@ window.matchMedia("(max-width: 880px)").addEventListener("change", event => {
 function setBusy(value) {
   busy = value;
   sendBtn.disabled = value;
-  imageModeBtn.disabled = value;
-  referenceBtn.disabled = value;
   document.getElementById("uploadBtn").disabled = value;
   sendBtn.textContent = value ? "…" : "↑";
   sendBtn.setAttribute("aria-label", value ? "Waiting for Nova" : "Send message");
@@ -557,35 +692,117 @@ function isImageGenerationRequest(text) {
 function buildImagePrompt(chatMessages) {
   const label = "Image request: ";
   const currentRequest = chatMessages[chatMessages.length - 1].content.slice(0, 12000 - label.length);
-  const context = chatMessages.slice(-7, -1)
-    .map(message => `${message.role}: ${message.content.slice(0, 500)}`)
+  const context = chatMessages.slice(-3, -1)
+    .map(message => `${message.role}: ${message.content.slice(0, 240)}`)
     .join("\n");
   const contextLabel = context ? `Recent conversation context:\n${context}\n\n` : "";
   const availableContext = Math.max(0, 12000 - currentRequest.length - label.length);
-  const keptContext = availableContext ? contextLabel.slice(-availableContext) : "";
+  const keptContext = availableContext
+    ? contextLabel.slice(-Math.min(availableContext, 600))
+    : "";
   return `${keptContext}${label}${currentRequest}`;
 }
 
 function startNewChat() {
   if (busy) return;
   setMobileHistoryOpen(false);
+  cancelMessageEdit();
   activeChatId = null;
   input.value = "";
   input.style.height = "auto";
-  clearReferenceImage();
-  setImageMode(false);
   showFileStatus("");
   renderMessages();
   renderHistory();
   input.focus();
 }
 
+function beginEditMessage(messageIndex) {
+  if (busy) return;
+  const chat = activeChat();
+  const message = chat && chat.messages[messageIndex];
+  if (!message || message.role !== "user") return;
+  editingMessageIndex = messageIndex;
+  editingChatId = chat.id;
+  input.value = message.content;
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, getComposerMaxHeight()) + "px";
+  input.placeholder = "Edit your message...";
+  sendBtn.textContent = "↻";
+  sendBtn.setAttribute("aria-label", "Update message");
+  sendBtn.title = "Update message";
+  cancelEditBtn.hidden = false;
+  showFileStatus("Editing this message will replace the responses that followed it.");
+  input.focus();
+}
+
+function cancelMessageEdit() {
+  editingMessageIndex = null;
+  editingChatId = null;
+  cancelEditBtn.hidden = true;
+  input.placeholder = "Message Nova...";
+  sendBtn.textContent = busy ? "…" : "↑";
+  sendBtn.setAttribute("aria-label", busy ? "Waiting for Nova" : "Send message");
+  sendBtn.title = busy ? "Waiting for Nova" : "Send message";
+}
+
+function getComposerMaxHeight() {
+  const configuredHeight = Number.parseInt(
+    getComputedStyle(document.documentElement).getPropertyValue("--composer-max-height"),
+    10
+  );
+  return Number.isFinite(configuredHeight) ? configuredHeight : 180;
+}
+
+async function readChatResponse(response, loading) {
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+    return response.json();
+  }
+  if (!response.body) throw new Error("The AI response stream was unavailable.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+  let result = {};
+
+  function processEvent(line) {
+    if (!line.startsWith("data: ")) return;
+    const event = JSON.parse(line.slice(6));
+    if (event.type === "delta" && typeof event.content === "string") {
+      answer += event.content;
+      const content = loading.querySelector(".message-content");
+      if (content) {
+        loading.classList.remove("loading");
+        content.innerHTML = renderMarkdown(answer);
+        chatArea.scrollTop = chatArea.scrollHeight;
+      }
+    } else if (event.type === "done") {
+      result = event;
+    } else if (event.type === "error") {
+      throw new Error(event.error || "The AI provider could not complete this request.");
+    }
+  }
+
+  try {
+    while (true) {
+      const {value, done} = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) processEvent(line);
+      if (done) break;
+    }
+    if (buffer) processEvent(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  return {...result, answer};
+}
+
 async function sendMessage(textOverride) {
   if (busy) return;
   const message = (textOverride ?? input.value).trim();
   if (!message) return;
-  const generateImage = imageMode || isImageGenerationRequest(message);
-  const attachedReference = generateImage ? referenceImageDataUrl : null;
+  const generateImage = isImageGenerationRequest(message);
 
   let chat = activeChat();
   if (!chat) {
@@ -599,24 +816,31 @@ async function sendMessage(textOverride) {
     activeChatId = chat.id;
   }
 
-  const userMessage = {role: "user", content: message};
-  if (attachedReference) userMessage.referenceImageDataUrl = attachedReference;
+  let userMessage;
+  if (editingChatId === chat.id && editingMessageIndex !== null) {
+    const editedMessage = chat.messages[editingMessageIndex];
+    chat.messages = chat.messages.slice(0, editingMessageIndex);
+    userMessage = {...editedMessage, role: "user", content: message};
+    if (editingMessageIndex === 0) {
+      chat.title = message.replace(/\s+/g, " ").slice(0, 48) || "New chat";
+    }
+    editingMessageIndex = null;
+    editingChatId = null;
+    cancelEditBtn.hidden = true;
+  } else {
+    userMessage = {role: "user", content: message};
+  }
   chat.messages.push(userMessage);
   chat.updatedAt = Date.now();
   input.value = "";
   input.style.height = "auto";
+  input.placeholder = "Message Nova...";
+  sendBtn.textContent = "↑";
+  sendBtn.setAttribute("aria-label", "Send message");
+  sendBtn.title = "Send message";
+  showFileStatus("");
   saveChats();
   renderMessages();
-  if (attachedReference) {
-    storeGeneratedImage(attachedReference).then(imageId => {
-      userMessage.referenceImageId = imageId;
-      delete userMessage.referenceImageDataUrl;
-      saveChats();
-    }).catch(error => {
-      console.warn("Could not save the Nova reference image.", error);
-      showFileStatus("The reference image was used, but this browser could not save it with the chat.", true);
-    });
-  }
   const loading = makeMessageElement(
     "assistant",
     generateImage ? "Creating your image…" : "Thinking…",
@@ -639,18 +863,18 @@ async function sendMessage(textOverride) {
     const endpoint = generateImage ? "/api/generate-image" : "/api/chat";
     const body = generateImage
       ? {
-        prompt: buildImagePrompt(chat.messages),
-        ...(attachedReference ? {referenceImage: attachedReference} : {})
+        prompt: buildImagePrompt(chat.messages)
       }
       : {
-        messages: chat.messages.slice(-24).map(({role, content}) => ({role, content}))
+        messages: chat.messages.slice(-24).map(({role, content}) => ({role, content})),
+        stream: true
       };
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    const data = await response.json();
+    const data = await readChatResponse(response, loading);
     if (!response.ok) throw new Error(data.error || "Something went wrong.");
     const answer = typeof data.answer === "string" && data.answer.trim()
       ? stripWrappingQuotes(data.answer)
@@ -717,21 +941,21 @@ input.addEventListener("keydown", event => {
 });
 input.addEventListener("input", () => {
   input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 180) + "px";
+  input.style.height = Math.min(input.scrollHeight, getComposerMaxHeight()) + "px";
 });
 document.querySelectorAll(".suggestion").forEach(button => {
   if (button.dataset.prompt) button.addEventListener("click", () => sendMessage(button.dataset.prompt));
 });
-document.getElementById("createImageSuggestion").addEventListener("click", () => {
-  setImageMode(true);
-  input.focus();
-});
 document.getElementById("newChatBtn").addEventListener("click", startNewChat);
 document.getElementById("mobileNewChatBtn").addEventListener("click", startNewChat);
 document.getElementById("uploadBtn").addEventListener("click", () => fileInput.click());
-imageModeBtn.addEventListener("click", () => setImageMode(!imageMode));
-referenceBtn.addEventListener("click", () => referenceImageInput.click());
-document.getElementById("removeReferenceBtn").addEventListener("click", clearReferenceImage);
+cancelEditBtn.addEventListener("click", () => {
+  cancelMessageEdit();
+  input.value = "";
+  input.style.height = "auto";
+  showFileStatus("");
+  input.focus();
+});
 
 let cameraStream = null;
 let cameraRequestId = 0;
@@ -863,52 +1087,13 @@ fileInput.addEventListener("change", async () => {
     const response = await fetch("/api/upload", {method: "POST", body: form});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Upload failed.");
-    showFileStatus(data.message + " Ask Nova a question about it.");
+    showFileStatus(data.message + (data.image
+      ? " Nova can analyze it or use it as visual guidance for an image request."
+      : " Ask Nova a question about it."));
   } catch (error) {
     showFileStatus(error.message || "Upload failed.", true);
   } finally {
     fileInput.value = "";
-  }
-});
-
-referenceImageInput.addEventListener("change", async () => {
-  const file = referenceImageInput.files[0];
-  if (!file) return;
-  const mimeTypes = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    webp: "image/webp"
-  };
-  const extension = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
-  const mimeType = file.type === "image/jpg" ? "image/jpeg" : (file.type || mimeTypes[extension]);
-  if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) {
-    showFileStatus("Choose a JPEG, PNG, or WebP reference image.", true);
-    referenceImageInput.value = "";
-    return;
-  }
-  if (!file.size) {
-    showFileStatus("The selected reference image is empty.", true);
-    referenceImageInput.value = "";
-    return;
-  }
-  if (file.size > 7 * 1024 * 1024) {
-    showFileStatus("Reference images must be 7 MB or smaller.", true);
-    referenceImageInput.value = "";
-    return;
-  }
-  try {
-    const imageDataUrl = await readImageFile(file);
-    const separator = imageDataUrl.indexOf(",");
-    if (separator < 0) throw new Error("Could not read the selected image.");
-    referenceImageDataUrl = `data:${mimeType};base64,${imageDataUrl.slice(separator + 1)}`;
-    referencePreviewImage.src = referenceImageDataUrl;
-    referenceImageName.textContent = file.name;
-    referencePreview.hidden = false;
-    showFileStatus("");
-  } catch (error) {
-    clearReferenceImage();
-    showFileStatus(error.message || "Could not read the selected image.", true);
   }
 });
 

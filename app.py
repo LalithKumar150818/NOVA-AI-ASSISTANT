@@ -4,9 +4,10 @@ import json
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, Response, render_template, request, jsonify, session, stream_with_context
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from groq import Groq
@@ -41,7 +42,7 @@ MAX_IMAGE_RESULTS = 8
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 MODEL_FALLBACKS = [DEFAULT_GROQ_MODEL]
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-lite-image"
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 WEB_SEARCH_INTENT = re.compile(
     r"\b(?:current(?:ly)?|latest|newest|recent(?:ly)?|today|tonight|yesterday|"
@@ -279,7 +280,7 @@ def upload():
         }
         session.modified = True
         return jsonify(
-            message=f"Uploaded image {filename}. Ask Nova a question about it.",
+            message=f"Uploaded image {filename}.",
             filename=filename,
             image=True,
         )
@@ -318,7 +319,12 @@ def chat():
         return jsonify(error="Type a question first."), 400
     web_search_override = data.get("web_search", False)
     image_search_override = data.get("image_search", False)
-    if not isinstance(web_search_override, bool) or not isinstance(image_search_override, bool):
+    stream_requested = data.get("stream", False)
+    if (
+        not isinstance(web_search_override, bool)
+        or not isinstance(image_search_override, bool)
+        or not isinstance(stream_requested, bool)
+    ):
         return jsonify(error="Search options must be true or false."), 400
 
     selected_tools = select_search_tools(messages)
@@ -328,23 +334,35 @@ def chat():
     image_results = []
     search_warnings = []
     search_query = selected_tools["query"]
+    search_jobs = {}
     if web_search_requested:
-        try:
-            web_results = search_web(search_query)
-        except Exception:
-            app.logger.exception("Nova web search request failed.")
-            search_warnings.append(
-                "Web search is temporarily unavailable; Nova answered without live web results."
-            )
+        search_jobs["web"] = search_web
     if image_search_requested:
-        try:
-            image_results = search_images(search_query)
-        except Exception:
-            app.logger.exception("Nova image search request failed.")
-            search_warnings.append(
-                "Image search is temporarily unavailable; Nova answered without image results."
-            )
-        if not image_results and not any(
+        search_jobs["images"] = search_images
+    if search_jobs:
+        with ThreadPoolExecutor(max_workers=len(search_jobs)) as executor:
+            search_futures = {
+                kind: executor.submit(search, search_query)
+                for kind, search in search_jobs.items()
+            }
+            for kind, future in search_futures.items():
+                try:
+                    results = future.result()
+                    if kind == "web":
+                        web_results = results
+                    else:
+                        image_results = results
+                except Exception:
+                    app.logger.exception("Nova %s search request failed.", kind)
+                    if kind == "web":
+                        search_warnings.append(
+                            "Web search is temporarily unavailable; Nova answered without live web results."
+                        )
+                    else:
+                        search_warnings.append(
+                            "Image search is temporarily unavailable; Nova answered without image results."
+                        )
+        if image_search_requested and not image_results and not any(
             warning.startswith("Image search") for warning in search_warnings
         ):
             search_warnings.append("No matching image results were found.")
@@ -478,6 +496,62 @@ def chat():
     for fallback_model in MODEL_FALLBACKS:
         if fallback_model not in candidate_models:
             candidate_models.append(fallback_model)
+
+    if stream_requested:
+        def stream_completion():
+            client = Groq(api_key=api_key)
+            for model_name in candidate_models:
+                try:
+                    completion_stream = client.chat.completions.create(
+                        model=model_name,
+                        messages=conversation_messages,
+                        temperature=0.3,
+                        max_completion_tokens=2400,
+                        stream=True,
+                    )
+                    for chunk in completion_stream:
+                        choices = getattr(chunk, "choices", [])
+                        if not choices:
+                            continue
+                        delta = getattr(choices[0], "delta", None)
+                        content = getattr(delta, "content", None)
+                        if isinstance(content, str) and content:
+                            yield f"data: {json.dumps({'type': 'delta', 'content': content})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'sources': web_results, 'images': image_results, 'search_warnings': search_warnings})}\n\n"
+                    return
+                except Exception as exc:
+                    message = str(exc).lower()
+                    if (
+                        "model_not_found" in message
+                        or "model_decommissioned" in message
+                        or "not exist or you do not have access" in message
+                    ):
+                        continue
+                    raise
+            raise RuntimeError("No valid Groq model was available.")
+
+        def event_stream():
+            try:
+                yield from stream_completion()
+            except Exception as exc:
+                app.logger.exception("Nova streamed AI request failed.")
+                message = str(exc).lower()
+                if "rate limit" in message or "429" in message:
+                    error = "Nova is temporarily rate-limited. Please wait a moment and try again."
+                elif "timeout" in message or "timed out" in message:
+                    error = "The AI request timed out. Please try again."
+                elif "401" in message or "authentication" in message or "invalid api key" in message:
+                    error = "The AI provider rejected its API key. Check GROQ_API_KEY in your environment."
+                else:
+                    error = "The AI provider could not complete this request. Please try again later."
+                yield f"data: {json.dumps({'type': 'error', 'error': error})}\n\n"
+
+        return Response(
+            stream_with_context(event_stream()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     last_error = None
     try:
         client = Groq(api_key=api_key)
@@ -502,8 +576,17 @@ def chat():
                 raise
         raise last_error or RuntimeError("No valid Groq model was available.")
     except Exception as exc:
-        # Keep this useful for local development; never print API keys.
-        return jsonify(error=f"AI request failed: {exc}"), 502
+        app.logger.exception("Nova AI request failed.")
+        message = str(exc).lower()
+        if "rate limit" in message or "429" in message:
+            error = "Nova is temporarily rate-limited. Please wait a moment and try again."
+        elif "timeout" in message or "timed out" in message:
+            error = "The AI request timed out. Please try again."
+        elif "401" in message or "authentication" in message or "invalid api key" in message:
+            error = "The AI provider rejected its API key. Check GROQ_API_KEY in your environment."
+        else:
+            error = "The AI provider could not complete this request. Please try again later."
+        return jsonify(error=error), 502
 
 
 @app.route("/api/generate-image", methods=["POST"])
@@ -516,7 +599,22 @@ def generate_image():
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_MESSAGE_CHARS:
         return jsonify(error=f"The image prompt must contain between 1 and {MAX_MESSAGE_CHARS:,} characters."), 400
 
+    aspect_ratio = data.get("aspectRatio", "1:1")
+    if not isinstance(aspect_ratio, str) or aspect_ratio not in {"1:1", "3:2", "2:3", "16:9", "9:16"}:
+        return jsonify(error="Choose a supported image aspect ratio."), 400
+
     reference_image = data.get("referenceImage")
+    if reference_image is None:
+        uploaded_image = DOCUMENTS.get(session.get("document_id"), {})
+        uploaded_bytes = uploaded_image.get("image_bytes")
+        uploaded_mime_type = uploaded_image.get("mime_type")
+        if isinstance(uploaded_bytes, bytes) and uploaded_mime_type in {
+            "image/jpeg", "image/png", "image/webp"
+        }:
+            reference_image = (
+                f"data:{uploaded_mime_type};base64,"
+                f"{base64.b64encode(uploaded_bytes).decode('ascii')}"
+            )
     reference_image_part = None
     if reference_image is not None:
         if not isinstance(reference_image, str):
@@ -548,12 +646,9 @@ def generate_image():
 
     generation_parts = [{
         "text": (
-            f"{LANGUAGE_INSTRUCTIONS} "
-            "If the image contains visible writing, use only the language the user requested, or otherwise "
-            "the language of their latest message; do not add text unless the prompt asks for it. "
-            "If a reference image is supplied, use it as visual guidance and preserve its relevant subject, "
-            "composition, or style unless the user asks for a change. "
-            "Generate the requested image now:\n"
+            "Create the image requested below. Follow any language explicitly requested by the user; "
+            "otherwise use the language of their message for visible text. Avoid adding text unless requested. "
+            "If a reference image is attached, use it as visual guidance.\n"
             f"{prompt.strip()}"
         ),
     }]
@@ -561,7 +656,10 @@ def generate_image():
         generation_parts.append(reference_image_part)
     request_body = {
         "contents": [{"parts": generation_parts}],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        "generationConfig": {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {"aspectRatio": aspect_ratio},
+        },
     }
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
