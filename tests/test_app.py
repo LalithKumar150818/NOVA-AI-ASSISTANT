@@ -465,7 +465,7 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 200)
         self.assertTrue(upload_response.get_json()["image"])
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "GEMINI_MODEL": ""}):
             with patch("app.urlopen", return_value=upstream_response) as urlopen:
                 response = client.post(
                     "/api/chat",
@@ -474,6 +474,7 @@ class ChatTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["answer"], "The image shows a red bicycle.")
+        self.assertIn("models/gemini-3.8-flash:generateContent", urlopen.call_args.args[0].full_url)
         request_body = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(request_body["contents"][0]["parts"][1]["inlineData"]["mimeType"], "image/png")
         self.assertIn("What color is the bicycle?", request_body["contents"][0]["parts"][0]["text"])

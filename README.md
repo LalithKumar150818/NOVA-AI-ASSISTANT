@@ -77,7 +77,7 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
    Copy-Item .env.example .env
    ```
 
-8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the configured Groq model (default `openai/gpt-oss-120b`); photo analysis uses `gemini-2.5-flash`; image generation defaults to `gemini-3.1-flash-lite-image`, Google's fastest image-generation option. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable for your account.
+8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the configured Groq model (default `openai/gpt-oss-120b`); photo analysis uses `gemini-3.8-flash`; image generation defaults to `gemini-3.1-flash-lite-image`, Google's fastest image-generation option. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable for your account.
 
 9. Start the app:
 
