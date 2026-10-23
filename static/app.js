@@ -538,30 +538,60 @@ function appendSearchResults(content, sources, images) {
   }
 }
 
-function appendVoiceResponse(content, text) {
-  if (!("speechSynthesis" in window) || typeof window.SpeechSynthesisUtterance !== "function" || !text.trim()) {
-    return;
-  }
+function createMessageAction(label, iconPath, onClick) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "read-aloud-btn";
-  button.textContent = "Read aloud";
-  button.setAttribute("aria-label", "Read this response aloud");
-  button.addEventListener("click", () => {
-    window.speechSynthesis.cancel();
-    const spokenText = text
-      .replace(/```[\s\S]*?```/g, " code example omitted ")
-      .replace(/[`*_#>|]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (spokenText) window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(spokenText));
-  });
-  content.appendChild(button);
+  button.className = "message-action";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", iconPath);
+  icon.appendChild(path);
+  button.appendChild(icon);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function appendMessageActions(body, role, text, messageIndex) {
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+  const copyButton = createMessageAction(
+    "Copy message",
+    "M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16M6 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z",
+    async event => {
+      const button = event.currentTarget;
+      try {
+        await navigator.clipboard.writeText(text);
+        button.setAttribute("aria-label", "Message copied");
+        button.title = "Copied";
+        window.setTimeout(() => {
+          button.setAttribute("aria-label", "Copy message");
+          button.title = "Copy message";
+        }, 1500);
+      } catch (error) {
+        console.warn("Could not copy the Nova message.", error);
+        showFileStatus("Could not copy message. Check clipboard permission and try again.", true);
+      }
+    }
+  );
+  actions.appendChild(copyButton);
+  if (role === "user") {
+    actions.appendChild(createMessageAction(
+      "Edit message",
+      "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z",
+      () => beginEditMessage(messageIndex)
+    ));
+  }
+  body.appendChild(actions);
 }
 
 function makeMessageElement(
   role, text, isError = false, imageId = null, imageDataUrl = null, sources = [], images = [],
-  allowSpeech = true, referenceImageId = null, referenceImageDataUrl = null, messageIndex = null
+  allowActions = true, referenceImageId = null, referenceImageDataUrl = null, messageIndex = null
 ) {
   const row = document.createElement("article");
   row.className = `message ${role}` + (isError ? " error" : "");
@@ -571,6 +601,8 @@ function makeMessageElement(
   avatar.textContent = role === "user" ? "Y" : "✦";
   const content = document.createElement("div");
   content.className = "message-content";
+  const body = document.createElement("div");
+  body.className = "message-body";
   if (role === "assistant" && !isError && !row.classList.contains("loading")) {
     content.innerHTML = text ? renderMarkdown(text) : "";
     addCodeBlockControls(content);
@@ -607,17 +639,14 @@ function makeMessageElement(
     content.appendChild(image);
   }
   if (role === "assistant" && !isError) appendSearchResults(content, sources, images);
-  if (role === "assistant" && !isError && allowSpeech) appendVoiceResponse(content, text);
-  if (role === "user" && !isError && messageIndex !== null) {
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "edit-message-btn";
-    editButton.textContent = "Edit";
-    editButton.setAttribute("aria-label", "Edit this message");
-    editButton.addEventListener("click", () => beginEditMessage(messageIndex));
-    content.appendChild(editButton);
+  body.appendChild(content);
+  if (!isError && (
+    (role === "assistant" && allowActions) ||
+    (role === "user" && messageIndex !== null)
+  )) {
+    appendMessageActions(body, role, text, messageIndex);
   }
-  row.append(avatar, content);
+  row.append(avatar, body);
   return row;
 }
 
