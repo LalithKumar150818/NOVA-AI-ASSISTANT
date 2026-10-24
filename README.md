@@ -11,7 +11,7 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
 - Clearly formatted AI answers that follow the language explicitly requested for each turn, or otherwise the language of the user's latest message
 - Progressively streamed AI answers through the Groq API, with readable provider error messages
 - Markdown responses with code syntax coloring, copy-code buttons, and generated-image downloads
-- Automatic web search through DuckDuckGo for current events, recent information, news, releases, prices, and other time-sensitive questions; cited sources are displayed with the answer
+- Automatic web search through DuckDuckGo for current events, prices, company and public-profile details, jobs, current technical documentation, troubleshooting, explicit online searches, and fact verification; cited sources are displayed with the answer
 - Automatic image search through Wikimedia Commons when users ask to see pictures, photos, or visual references; thumbnails, titles, and attribution links are displayed in chat
 - Automatically route explicit image-creation requests from the normal message composer to Gemini image generation; ordinary questions remain text chat
 - Use Gemini 3.1 Flash Lite Image by default for image creation; override `GEMINI_IMAGE_MODEL` when your account needs a different supported model
@@ -153,6 +153,11 @@ Voice features are browser-dependent. The app uses speech recognition to convert
 - Image-only/scanned PDFs are not OCR-processed in this starter project.
 - The app extracts up to 15,000 characters for document context to limit prompt size.
 - The extracted document text is sent to the AI provider when you ask a question. Do not upload confidential documents.
+
+## Automatic web search
+Nova searches automatically when a question asks for current information, news, prices, job openings, company details, public profiles, current technical documentation or troubleshooting, explicit online research, or fact verification. Greetings, creative requests, translations, summaries of provided text, basic coding concepts, and math do not trigger web search unless you request external research.
+
+Search results are evaluated as excerpts and shown below the answer as clickable source links. Nova is instructed to prefer official sources, compare independent sources for important claims, cite supported facts, and state when the available results do not verify an answer. Search uses DuckDuckGo's HTML results; search availability and result quality depend on that service.
 
 ## Troubleshooting
 - `npm run dev` fails with `ENOENT` for `package.json`: this is a Python/Flask project, not a Node.js project. From the `ai_assistant_mini_project` folder, start it with `python app.py`, then open http://127.0.0.1:5000.

@@ -410,6 +410,61 @@ class ChatTests(unittest.TestCase):
         self.assertFalse(ordinary_question["images"])
         self.assertFalse(image_creation["images"])
 
+    def test_automatically_searches_explicit_and_volatile_information_requests(self):
+        search_requests = [
+            "Search the web for the newest Python release.",
+            "Search for whether green tea stains fabric on Google.",
+            "What are the current share prices for Acme?",
+            "Tell me the latest news about the election.",
+            "Find internship openings at Example Corp.",
+            "Show me Example Corp's company profile and leadership.",
+            "Can you verify these statistics with reliable sources?",
+            "Check the current Flask API documentation.",
+            "Help troubleshoot this recent React framework error.",
+        ]
+
+        for question in search_requests:
+            with self.subTest(question=question):
+                self.assertTrue(
+                    select_search_tools([{"role": "user", "content": question}])["web"]
+                )
+
+    def test_avoids_web_search_for_greetings_creative_tasks_and_basic_concepts(self):
+        non_search_requests = [
+            "Hi, how are you?",
+            "Write a short story about a dragon.",
+            "Translate this sentence into Telugu.",
+            "Summarize the paragraph I pasted above.",
+            "Explain Python functions with a simple example.",
+            "How do I solve 12 times 14?",
+            "What is price elasticity?",
+            "Please update this function to use a loop.",
+        ]
+
+        for question in non_search_requests:
+            with self.subTest(question=question):
+                self.assertFalse(
+                    select_search_tools([{"role": "user", "content": question}])["web"]
+                )
+
+    def test_search_query_uses_latest_question_and_only_adds_relevant_follow_up_context(self):
+        unrelated_turns = select_search_tools([
+            {"role": "user", "content": "What is the latest news about Mars?"},
+            {"role": "assistant", "content": "Here is the news."},
+            {"role": "user", "content": "What is the latest news about Python?"},
+        ])
+        follow_up = select_search_tools([
+            {"role": "user", "content": "What is the latest price of Acme stock?"},
+            {"role": "assistant", "content": "It is changing throughout the day."},
+            {"role": "user", "content": "What about its price today?"},
+        ])
+
+        self.assertEqual(unrelated_turns["query"], "What is the latest news about Python?")
+        self.assertEqual(
+            follow_up["query"],
+            "What is the latest price of Acme stock? What about its price today?",
+        )
+
     def test_search_and_image_generation_controls_are_not_rendered(self):
         response = app.test_client().get("/")
 
