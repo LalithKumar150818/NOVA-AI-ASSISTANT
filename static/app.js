@@ -782,9 +782,19 @@ function getComposerMaxHeight() {
   return Number.isFinite(configuredHeight) ? configuredHeight : 180;
 }
 
+async function readJsonResponse(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    const status = response.status ? ` (HTTP ${response.status})` : "";
+    throw new Error(`Nova's server returned an unexpected response${status}. Please try again.`);
+  }
+}
+
 async function readChatResponse(response, loading) {
   if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-    return response.json();
+    return readJsonResponse(response);
   }
   if (!response.body) throw new Error("The AI response stream was unavailable.");
   const reader = response.body.getReader();
@@ -1087,7 +1097,7 @@ async function analyzePhoto(image, prompt) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({image, prompt})
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) throw new Error(data.error || "Gemini could not analyze the photo.");
     const answer = typeof data.answer === "string" && data.answer.trim()
       ? stripWrappingQuotes(data.answer)
@@ -1114,7 +1124,7 @@ fileInput.addEventListener("change", async () => {
   form.append("file", file);
   try {
     const response = await fetch("/api/upload", {method: "POST", body: form});
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) throw new Error(data.error || "Upload failed.");
     showFileStatus(data.message + (data.image
       ? " Nova can analyze it or use it as visual guidance for an image request."
@@ -1129,7 +1139,7 @@ fileInput.addEventListener("change", async () => {
 document.getElementById("clearDocBtn").addEventListener("click", async () => {
   try {
     const response = await fetch("/api/clear-document", {method: "POST"});
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) throw new Error(data.error || "Could not clear the document.");
     showFileStatus(data.message || "Document context cleared.");
   } catch (error) {

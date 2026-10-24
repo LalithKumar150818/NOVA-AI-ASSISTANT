@@ -5,7 +5,7 @@ import unittest
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from app import DOCUMENTS, DuckDuckGoResultsParser, app, search_images, select_search_tools
 
@@ -478,6 +478,42 @@ class ChatTests(unittest.TestCase):
         request_body = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(request_body["contents"][0]["parts"][1]["inlineData"]["mimeType"], "image/png")
         self.assertIn("What color is the bicycle?", request_body["contents"][0]["parts"][0]["text"])
+        with client.session_transaction() as flask_session:
+            DOCUMENTS.pop(flask_session.get("document_id"), None)
+
+    def test_retries_temporary_gemini_image_question_errors(self):
+        upstream_response = MagicMock()
+        upstream_response.__enter__.return_value.read.return_value = json.dumps({
+            "candidates": [{
+                "content": {"parts": [{"text": "The image shows a red bicycle."}]},
+            }],
+        }).encode("utf-8")
+        temporary_error = HTTPError(
+            "https://generativelanguage.googleapis.com/",
+            503,
+            "Service Unavailable",
+            {},
+            BytesIO(b'{"error":{"message":"Temporarily unavailable"}}'),
+        )
+        client = app.test_client()
+        upload_response = client.post(
+            "/api/upload",
+            data={"file": (BytesIO(b"png image bytes"), "bicycle.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_response.status_code, 200)
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "GEMINI_MODEL": ""}):
+            with patch("app.urlopen", side_effect=[temporary_error, upstream_response]) as urlopen:
+                with patch("app.time.sleep"):
+                    response = client.post(
+                        "/api/chat",
+                        json={"messages": [{"role": "user", "content": "What color is the bicycle?"}]},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["answer"], "The image shows a red bicycle.")
+        self.assertEqual(urlopen.call_count, 2)
         with client.session_transaction() as flask_session:
             DOCUMENTS.pop(flask_session.get("document_id"), None)
 

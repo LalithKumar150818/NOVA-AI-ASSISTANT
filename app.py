@@ -3,6 +3,7 @@ import binascii
 import json
 import os
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
@@ -44,6 +45,8 @@ MODEL_FALLBACKS = [DEFAULT_GROQ_MODEL]
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-lite-image"
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
+GEMINI_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+MAX_GEMINI_ATTEMPTS = 3
 WEB_SEARCH_INTENT = re.compile(
     r"\b(?:current(?:ly)?|latest|newest|recent(?:ly)?|today|tonight|yesterday|"
     r"this\s+(?:week|month|year)|breaking|news|updates?|release(?:d)?|"
@@ -220,6 +223,24 @@ def get_gemini_model():
 def get_gemini_image_model():
     configured_model = (os.getenv("GEMINI_IMAGE_MODEL") or "").strip()
     return configured_model or DEFAULT_GEMINI_IMAGE_MODEL
+
+
+def open_gemini_request(gemini_request, timeout):
+    for attempt in range(MAX_GEMINI_ATTEMPTS):
+        try:
+            return urlopen(gemini_request, timeout=timeout)
+        except HTTPError as exc:
+            if exc.code not in GEMINI_RETRYABLE_STATUS_CODES or attempt == MAX_GEMINI_ATTEMPTS - 1:
+                raise
+            app.logger.warning(
+                "Gemini returned HTTP %s; retrying request (%s/%s).",
+                exc.code,
+                attempt + 1,
+                MAX_GEMINI_ATTEMPTS - 1,
+            )
+            exc.close()
+            time.sleep(0.5 * (2 ** attempt))
+    raise RuntimeError("Gemini request ended without a response.")
 
 
 def extract_text(file_storage):
@@ -464,7 +485,7 @@ def chat():
             method="POST",
         )
         try:
-            with urlopen(image_request, timeout=60) as response:
+            with open_gemini_request(image_request, timeout=60) as response:
                 response_data = json.loads(response.read())
         except HTTPError as exc:
             provider_error = exc.read(4000).decode("utf-8", errors="replace")
@@ -672,7 +693,7 @@ def generate_image():
         method="POST",
     )
     try:
-        with urlopen(gemini_request, timeout=90) as response:
+        with open_gemini_request(gemini_request, timeout=90) as response:
             response_data = json.loads(response.read())
     except HTTPError as exc:
         provider_error = exc.read(4000).decode("utf-8", errors="replace")
@@ -783,7 +804,7 @@ def analyze_image():
         method="POST",
     )
     try:
-        with urlopen(gemini_request, timeout=60) as response:
+        with open_gemini_request(gemini_request, timeout=60) as response:
             response_data = json.loads(response.read())
     except HTTPError as exc:
         provider_error = exc.read(4000).decode("utf-8", errors="replace")
