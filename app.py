@@ -1,13 +1,21 @@
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from urllib.request import Request, urlopen
+
+from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, Response, render_template, request, jsonify, session, stream_with_context
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -15,9 +23,6 @@ from groq import Groq
 from pypdf import PdfReader
 from docx import Document
 from io import BytesIO
-from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
@@ -25,7 +30,17 @@ for env_path in (BASE_DIR / ".env", ROOT_DIR / ".env"):
     if env_path.exists():
         load_dotenv(env_path)
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-this-development-secret")
+configured_secret_key = (os.getenv("FLASK_SECRET_KEY") or "").strip()
+production_mode = bool(os.getenv("RENDER")) or os.getenv("FLASK_ENV") == "production"
+if production_mode and not configured_secret_key:
+    raise RuntimeError("FLASK_SECRET_KEY must be set to a unique secret in production.")
+app.secret_key = configured_secret_key or secrets.token_urlsafe(48)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=production_mode,
+    PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 14,
+)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB per request
 
 ALLOWED_EXTENSIONS = {"txt", "pdf", "docx"}
@@ -45,8 +60,11 @@ MODEL_FALLBACKS = [DEFAULT_GROQ_MODEL]
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-lite-image"
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
+MAX_CONVERSATIONS = 30
+MAX_PERSISTED_MESSAGES = 50
 GEMINI_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_GEMINI_ATTEMPTS = 3
+MAX_SUPABASE_RESPONSE_BYTES = 5 * 1024 * 1024
 WEB_SEARCH_INTENT = re.compile(
     r"\b(?:current(?:ly)?|latest|newest|recent(?:ly)?|today|tonight|yesterday|"
     r"this\s+(?:week|month|year)|breaking\s+news|news|"
@@ -126,6 +144,228 @@ LANGUAGE_INSTRUCTIONS = (
 )
 # In-memory document store for this local demo; avoids putting large text in the session cookie.
 DOCUMENTS = {}
+
+
+class SupabaseError(Exception):
+    def __init__(self, message, status_code=502):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def supabase_configuration():
+    supabase_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    supabase_key = (os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    if not supabase_url or not supabase_key:
+        return None
+    parsed_url = urlsplit(supabase_url)
+    if parsed_url.scheme != "https" and parsed_url.hostname not in {"localhost", "127.0.0.1"}:
+        return None
+    if (
+        not parsed_url.netloc
+        or parsed_url.username
+        or parsed_url.password
+        or parsed_url.path not in {"", "/"}
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        return None
+    return supabase_url, supabase_key
+
+
+def encrypted_auth_serializer():
+    key = hashlib.sha256(app.secret_key.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def clear_app_session():
+    document_id = session.pop("document_id", None)
+    if document_id:
+        DOCUMENTS.pop(document_id, None)
+    session.clear()
+
+
+def supabase_request(path, method="GET", access_token=None, payload=None, prefer=None):
+    configuration = supabase_configuration()
+    if not configuration:
+        raise SupabaseError(
+            "Cloud accounts are not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY.",
+            503,
+        )
+    supabase_url, supabase_key = configuration
+    headers = {
+        "apikey": supabase_key,
+        "Accept": "application/json",
+    }
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    if prefer:
+        headers["Prefer"] = prefer
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    api_request = Request(
+        f"{supabase_url}{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urlopen(api_request, timeout=15) as response:
+            response_body = response.read(MAX_SUPABASE_RESPONSE_BYTES + 1)
+    except HTTPError as exc:
+        provider_body = exc.read(16 * 1024).decode("utf-8", errors="replace")
+        try:
+            provider_error = json.loads(provider_body)
+        except json.JSONDecodeError:
+            provider_error = {}
+        if isinstance(provider_error, dict):
+            message = (
+                provider_error.get("msg")
+                or provider_error.get("message")
+                or provider_error.get("error_description")
+                or provider_error.get("error")
+            )
+        else:
+            message = None
+        if not isinstance(message, str) or not message.strip():
+            message = f"Supabase returned HTTP {exc.code}."
+        exc.close()
+        raise SupabaseError(message[:500], exc.code) from None
+    except URLError as exc:
+        raise SupabaseError(f"Could not connect to Supabase: {exc.reason}", 503) from None
+    if len(response_body) > MAX_SUPABASE_RESPONSE_BYTES:
+        raise SupabaseError("Supabase returned an unexpectedly large response.")
+    if not response_body:
+        return None
+    try:
+        return json.loads(response_body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SupabaseError("Supabase returned an unreadable response.") from None
+
+
+def store_supabase_session(auth_response, preserve_session=False):
+    user = auth_response.get("user") if isinstance(auth_response, dict) else None
+    access_token = auth_response.get("access_token") if isinstance(auth_response, dict) else None
+    refresh_token = auth_response.get("refresh_token") if isinstance(auth_response, dict) else None
+    if (
+        not isinstance(user, dict)
+        or not isinstance(user.get("id"), str)
+        or not isinstance(access_token, str)
+        or not isinstance(refresh_token, str)
+    ):
+        return False
+    expires_in = auth_response.get("expires_in", 3600)
+    if not isinstance(expires_in, int) or expires_in < 0:
+        expires_in = 3600
+    auth_bundle = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": int(time.time()) + expires_in,
+        "user": {"id": user["id"], "email": user.get("email", "")},
+    }
+    encrypted_bundle = encrypted_auth_serializer().encrypt(
+        json.dumps(auth_bundle).encode("utf-8")
+    )
+    csrf_token = session.get("csrf_token") if preserve_session else None
+    if not preserve_session:
+        clear_app_session()
+    session["auth_bundle"] = encrypted_bundle.decode("ascii")
+    session["csrf_token"] = csrf_token or secrets.token_urlsafe(32)
+    session.permanent = True
+    return True
+
+
+def authenticated_context():
+    encrypted_bundle = session.get("auth_bundle")
+    if not isinstance(encrypted_bundle, str):
+        return None
+    try:
+        auth_bundle = json.loads(
+            encrypted_auth_serializer().decrypt(encrypted_bundle.encode("ascii"))
+        )
+    except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        clear_app_session()
+        return None
+    if not isinstance(auth_bundle, dict):
+        clear_app_session()
+        return None
+    access_token = auth_bundle.get("access_token")
+    refresh_token = auth_bundle.get("refresh_token")
+    user = auth_bundle.get("user")
+    if (
+        not isinstance(access_token, str)
+        or not isinstance(refresh_token, str)
+        or not isinstance(user, dict)
+        or not isinstance(user.get("id"), str)
+    ):
+        clear_app_session()
+        return None
+    if auth_bundle.get("expires_at", 0) <= int(time.time()) + 60:
+        try:
+            auth_response = supabase_request(
+                "/auth/v1/token?grant_type=refresh_token",
+                method="POST",
+                payload={"refresh_token": refresh_token},
+            )
+        except SupabaseError:
+            app.logger.warning("Supabase session refresh failed; clearing the local session.")
+            session.clear()
+            return None
+        if not store_supabase_session(auth_response, preserve_session=True):
+            clear_app_session()
+            return None
+        auth_bundle = json.loads(
+            encrypted_auth_serializer().decrypt(session["auth_bundle"].encode("ascii"))
+        )
+        access_token = auth_bundle["access_token"]
+        user = auth_bundle["user"]
+    return {"access_token": access_token, "user": user}
+
+
+def require_authenticated_context():
+    if not supabase_configuration():
+        return None, (jsonify(error="Cloud accounts are not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY."), 503)
+    context = authenticated_context()
+    if not context:
+        return None, (jsonify(error="Sign in to access your cloud conversations."), 401)
+    return context, None
+
+
+def validate_conversation_id(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+def get_owned_conversation(conversation_id, access_token):
+    rows = supabase_request(
+        "/rest/v1/conversations?"
+        + urlencode({
+            "select": "id,title,created_at,updated_at",
+            "id": f"eq.{conversation_id}",
+            "limit": "1",
+        }),
+        access_token=access_token,
+    )
+    if not isinstance(rows, list) or not rows:
+        return None
+    return rows[0] if isinstance(rows[0], dict) else None
+
+
+@app.before_request
+def protect_authenticated_api_requests():
+    if (
+        request.path.startswith("/api/")
+        and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and session.get("auth_bundle")
+    ):
+        expected_token = session.get("csrf_token", "")
+        provided_token = request.headers.get("X-CSRF-Token", "")
+        if not expected_token or not hmac.compare_digest(expected_token, provided_token):
+            return jsonify(error="Your security token expired. Refresh the page and try again."), 403
 
 
 def select_search_tools(messages):
@@ -337,6 +577,336 @@ def home():
     return render_template("index.html")
 
 
+@app.get("/healthz")
+def health_check():
+    return jsonify(status="ok")
+
+
+@app.get("/api/auth/status")
+def auth_status():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    auth_enabled = bool(supabase_configuration())
+    if not auth_enabled and session.get("auth_bundle"):
+        clear_app_session()
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    context = authenticated_context() if auth_enabled else None
+    return jsonify(
+        enabled=auth_enabled,
+        user=context["user"] if context else None,
+        csrf_token=session["csrf_token"],
+    )
+
+
+@app.post("/api/auth/register")
+def register():
+    if not supabase_configuration():
+        return jsonify(error="Cloud accounts are not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY."), 503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="The request must be a JSON object."), 400
+    email = data.get("email")
+    password = data.get("password")
+    if not isinstance(email, str) or not email.strip() or len(email) > 254 or "@" not in email:
+        return jsonify(error="Enter a valid email address."), 400
+    if not isinstance(password, str) or not 8 <= len(password) <= 128:
+        return jsonify(error="Password must contain between 8 and 128 characters."), 400
+    try:
+        auth_response = supabase_request(
+            "/auth/v1/signup",
+            method="POST",
+            payload={"email": email.strip(), "password": password},
+        )
+    except SupabaseError as exc:
+        return jsonify(error=str(exc)), exc.status_code
+    if not isinstance(auth_response, dict):
+        return jsonify(error="Supabase returned an unreadable registration response."), 502
+    has_session = store_supabase_session(auth_response)
+    user = auth_response.get("user")
+    if has_session:
+        context = authenticated_context()
+        if not context:
+            return jsonify(error="Supabase returned an invalid account session."), 502
+        return jsonify(
+            message="Your account is ready.",
+            user=context["user"],
+            csrf_token=session["csrf_token"],
+        ), 201
+    user_email = user.get("email") if isinstance(user, dict) else email.strip()
+    return jsonify(
+        message="Check your email to confirm your account, then sign in.",
+        user={"email": user_email},
+    ), 201
+
+
+@app.post("/api/auth/login")
+def login():
+    if not supabase_configuration():
+        return jsonify(error="Cloud accounts are not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY."), 503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="The request must be a JSON object."), 400
+    email = data.get("email")
+    password = data.get("password")
+    if not isinstance(email, str) or not email.strip() or len(email) > 254:
+        return jsonify(error="Enter a valid email address."), 400
+    if not isinstance(password, str) or not password or len(password) > 128:
+        return jsonify(error="Enter your password."), 400
+    try:
+        auth_response = supabase_request(
+            "/auth/v1/token?grant_type=password",
+            method="POST",
+            payload={"email": email.strip(), "password": password},
+        )
+    except SupabaseError as exc:
+        return jsonify(error=str(exc)), exc.status_code
+    if not store_supabase_session(auth_response):
+        return jsonify(error="Supabase did not return a valid sign-in session."), 502
+    context = authenticated_context()
+    if not context:
+        return jsonify(error="Supabase returned an invalid sign-in session."), 502
+    return jsonify(
+        message="Signed in.",
+        user=context["user"],
+        csrf_token=session["csrf_token"],
+    )
+
+
+@app.post("/api/auth/logout")
+def logout():
+    context = authenticated_context()
+    provider_error = None
+    if context:
+        try:
+            supabase_request(
+                "/auth/v1/logout",
+                method="POST",
+                access_token=context["access_token"],
+            )
+        except SupabaseError as exc:
+            app.logger.warning("Supabase sign-out request failed: %s", exc)
+            provider_error = "Supabase could not invalidate the remote session."
+    clear_app_session()
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    if provider_error:
+        return jsonify(error=provider_error), 502
+    return jsonify(message="Signed out.", csrf_token=session["csrf_token"])
+
+
+@app.get("/api/conversations")
+def list_conversations():
+    context, error_response = require_authenticated_context()
+    if error_response:
+        return error_response
+    try:
+        rows = supabase_request(
+            "/rest/v1/conversations?"
+            + urlencode({
+                "select": "id,title,created_at,updated_at",
+                "order": "updated_at.desc",
+                "limit": str(MAX_CONVERSATIONS),
+            }),
+            access_token=context["access_token"],
+        )
+    except SupabaseError as exc:
+        app.logger.warning("Could not list the authenticated user's conversations: %s", exc)
+        return jsonify(error=str(exc)), exc.status_code
+    if not isinstance(rows, list):
+        return jsonify(error="Supabase returned an invalid conversation list."), 502
+    return jsonify(conversations=rows)
+
+
+@app.post("/api/conversations")
+def create_conversation():
+    context, error_response = require_authenticated_context()
+    if error_response:
+        return error_response
+    data = request.get_json(silent=True)
+    title = data.get("title") if isinstance(data, dict) else None
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 80:
+        return jsonify(error="Conversation titles must contain between 1 and 80 characters."), 400
+    conversation_id = str(uuid.uuid4())
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        rows = supabase_request(
+            "/rest/v1/conversations",
+            method="POST",
+            access_token=context["access_token"],
+            payload={
+                "id": conversation_id,
+                "user_id": context["user"]["id"],
+                "title": title.strip(),
+                "created_at": now,
+                "updated_at": now,
+            },
+            prefer="return=representation",
+        )
+    except SupabaseError as exc:
+        app.logger.warning("Could not create a conversation: %s", exc)
+        return jsonify(error=str(exc)), exc.status_code
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return jsonify(error="Supabase did not return the created conversation."), 502
+    conversation = rows[0]
+    conversation["messages"] = []
+    return jsonify(conversation=conversation), 201
+
+
+@app.get("/api/conversations/<conversation_id>")
+def get_conversation(conversation_id):
+    normalized_id = validate_conversation_id(conversation_id)
+    if not normalized_id:
+        return jsonify(error="The conversation ID is invalid."), 400
+    context, error_response = require_authenticated_context()
+    if error_response:
+        return error_response
+    try:
+        conversation = get_owned_conversation(normalized_id, context["access_token"])
+        if not conversation:
+            return jsonify(error="Conversation not found."), 404
+        rows = supabase_request(
+            "/rest/v1/messages?"
+            + urlencode({
+                "select": "position,role,content,metadata,created_at",
+                "conversation_id": f"eq.{normalized_id}",
+                "order": "position.asc",
+                "limit": str(MAX_PERSISTED_MESSAGES),
+            }),
+            access_token=context["access_token"],
+        )
+    except SupabaseError as exc:
+        app.logger.warning("Could not load conversation %s: %s", normalized_id, exc)
+        return jsonify(error=str(exc)), exc.status_code
+    if not isinstance(rows, list):
+        return jsonify(error="Supabase returned an invalid message list."), 502
+    conversation["messages"] = [
+        {
+            "role": row["role"],
+            "content": row["content"],
+            **(row["metadata"] if isinstance(row.get("metadata"), dict) else {}),
+        }
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("role") in {"user", "assistant"}
+        and isinstance(row.get("content"), str)
+    ]
+    return jsonify(conversation=conversation)
+
+
+@app.patch("/api/conversations/<conversation_id>")
+def rename_conversation(conversation_id):
+    normalized_id = validate_conversation_id(conversation_id)
+    if not normalized_id:
+        return jsonify(error="The conversation ID is invalid."), 400
+    context, error_response = require_authenticated_context()
+    if error_response:
+        return error_response
+    data = request.get_json(silent=True)
+    title = data.get("title") if isinstance(data, dict) else None
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 80:
+        return jsonify(error="Conversation titles must contain between 1 and 80 characters."), 400
+    try:
+        if not get_owned_conversation(normalized_id, context["access_token"]):
+            return jsonify(error="Conversation not found."), 404
+        rows = supabase_request(
+            "/rest/v1/conversations?" + urlencode({"id": f"eq.{normalized_id}"}),
+            method="PATCH",
+            access_token=context["access_token"],
+            payload={
+                "title": title.strip(),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            prefer="return=representation",
+        )
+    except SupabaseError as exc:
+        app.logger.warning("Could not rename conversation %s: %s", normalized_id, exc)
+        return jsonify(error=str(exc)), exc.status_code
+    if not isinstance(rows, list) or not rows:
+        return jsonify(error="Conversation not found."), 404
+    return jsonify(conversation=rows[0])
+
+
+@app.delete("/api/conversations/<conversation_id>")
+def delete_conversation(conversation_id):
+    normalized_id = validate_conversation_id(conversation_id)
+    if not normalized_id:
+        return jsonify(error="The conversation ID is invalid."), 400
+    context, error_response = require_authenticated_context()
+    if error_response:
+        return error_response
+    try:
+        if not get_owned_conversation(normalized_id, context["access_token"]):
+            return jsonify(error="Conversation not found."), 404
+        supabase_request(
+            "/rest/v1/conversations?" + urlencode({"id": f"eq.{normalized_id}"}),
+            method="DELETE",
+            access_token=context["access_token"],
+        )
+    except SupabaseError as exc:
+        app.logger.warning("Could not delete conversation %s: %s", normalized_id, exc)
+        return jsonify(error=str(exc)), exc.status_code
+    return jsonify(message="Conversation deleted.")
+
+
+@app.put("/api/conversations/<conversation_id>/messages")
+def replace_conversation_messages(conversation_id):
+    normalized_id = validate_conversation_id(conversation_id)
+    if not normalized_id:
+        return jsonify(error="The conversation ID is invalid."), 400
+    context, error_response = require_authenticated_context()
+    if error_response:
+        return error_response
+    data = request.get_json(silent=True)
+    raw_messages = data.get("messages") if isinstance(data, dict) else None
+    title = data.get("title") if isinstance(data, dict) else None
+    if not isinstance(raw_messages, list) or len(raw_messages) > MAX_PERSISTED_MESSAGES:
+        return jsonify(error="Conversation history must be a list of at most 50 messages."), 400
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 80:
+        return jsonify(error="Conversation titles must contain between 1 and 80 characters."), 400
+    rows = []
+    for message in raw_messages:
+        if (
+            not isinstance(message, dict)
+            or message.get("role") not in {"user", "assistant"}
+            or not isinstance(message.get("content"), str)
+            or not message["content"].strip()
+            or len(message["content"]) > MAX_MESSAGE_CHARS
+        ):
+            return jsonify(error="The conversation contains an invalid message."), 400
+        metadata = {
+            key: message[key]
+            for key in ("sources", "images")
+            if isinstance(message.get(key), list)
+        }
+        rows.append({
+            "role": message["role"],
+            "content": message["content"],
+            "metadata": metadata,
+        })
+    try:
+        if not get_owned_conversation(normalized_id, context["access_token"]):
+            return jsonify(error="Conversation not found."), 404
+        supabase_request(
+            "/rest/v1/rpc/replace_conversation_messages",
+            method="POST",
+            access_token=context["access_token"],
+            payload={"p_conversation_id": normalized_id, "p_messages": rows},
+        )
+        supabase_request(
+            "/rest/v1/conversations?" + urlencode({"id": f"eq.{normalized_id}"}),
+            method="PATCH",
+            access_token=context["access_token"],
+            payload={
+                "title": title.strip(),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            prefer="return=minimal",
+        )
+    except SupabaseError as exc:
+        app.logger.warning("Could not save messages for conversation %s: %s", normalized_id, exc)
+        return jsonify(error=str(exc)), exc.status_code
+    return jsonify(message="Conversation saved.")
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
@@ -393,7 +963,9 @@ def chat():
             return jsonify(error="The conversation contains an invalid message."), 400
         content = content.strip()
         if not content or len(content) > MAX_MESSAGE_CHARS:
-            return jsonify(error="Each message must contain between 1 and 12,000 characters."), 400
+            return jsonify(
+                error=f"Each message must contain between 1 and {MAX_MESSAGE_CHARS:,} characters."
+            ), 400
         messages.append({"role": role, "content": content})
 
     if not messages or messages[-1]["role"] != "user":

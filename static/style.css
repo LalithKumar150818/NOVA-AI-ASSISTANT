@@ -129,6 +129,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .history-action { padding: 5px 6px; color: #aaaab1; background: transparent; border: 0; border-radius: 6px; font-size: 10px; cursor: pointer; }
 .history-action:hover { color: #fff; background: #38383c; }
 .history-empty { margin: 8px 10px; color: #85858b; font-size: 12px; line-height: 1.5; }
+.auth-setup-note { margin: 10px 8px; color: #898c9b; font-size: 10px; line-height: 1.5; }
+.auth-setup-note[hidden] { display: none; }
 .history-rename-form { display: flex; gap: 4px; width: 100%; padding: 4px; }
 .history-rename-form input { min-width: 0; flex: 1; padding: 6px; color: #e6e6ea; background: #202022; border: 1px solid #45454b; border-radius: 6px; font: inherit; font-size: 11px; }
 .history-rename-form button { padding: 5px 6px; color: #ddd; background: #303034; border: 0; border-radius: 6px; font-size: 10px; cursor: pointer; }
@@ -161,6 +163,17 @@ button { -webkit-tap-highlight-color: transparent; }
   font-size: 12px;
   cursor: pointer;
 }
+.auth-button {
+  padding: 8px 11px;
+  color: #dedee2;
+  background: #29292c;
+  border: 1px solid #38383b;
+  border-radius: 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.auth-button:hover { color: #fff; background: #383547; }
+.auth-user-label { max-width: 180px; overflow: hidden; color: #a7a7ad; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .clear-doc:hover, .mobile-new-chat:hover { color: #6257d8; background: #f2f0ff; }
 .mobile-brand, .mobile-new-chat { display: none; }
 
@@ -363,6 +376,22 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 .confirm-dialog { width: min(390px, calc(100% - 32px)); padding: 0; color: var(--ink); background: transparent; border: 0; }
 .confirm-dialog::backdrop { background: #0009; backdrop-filter: blur(2px); }
+.auth-dialog { width: min(420px, calc(100% - 28px)); max-width: none; padding: 0; color: var(--ink); background: transparent; border: 0; }
+.auth-dialog::backdrop { background: #0009; backdrop-filter: blur(2px); }
+.auth-panel { display: flex; flex-direction: column; gap: 9px; padding: 22px; background: #19191b; border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+.auth-header { display: flex; align-items: center; justify-content: space-between; }
+.auth-header h2 { margin: 0; font: 700 19px Manrope, sans-serif; }
+.auth-panel > p { margin: 0 0 7px; color: #a0a0a6; font-size: 12px; line-height: 1.5; }
+.auth-panel label { margin-top: 5px; color: #d7d7dc; font-size: 12px; font-weight: 600; }
+.auth-panel input { width: 100%; min-height: 40px; padding: 9px 11px; color: var(--ink); background: #121213; border: 1px solid var(--line); border-radius: 9px; font: inherit; font-size: 13px; }
+.auth-panel input:focus { outline: 2px solid #7770ad; }
+.auth-message[hidden] { display: none; }
+.auth-message.is-error { color: #ffadad; }
+.auth-submit { margin-top: 5px; padding: 10px 12px; color: white; background: #7269d8; border: 0; border-radius: 9px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.auth-submit:hover { background: #8178ea; }
+.auth-submit:disabled { opacity: .65; cursor: wait; }
+.auth-mode-toggle { padding: 6px; color: #c2bcff; background: transparent; border: 0; font: inherit; font-size: 12px; cursor: pointer; }
+.auth-mode-toggle:hover { text-decoration: underline; }
 .confirm-panel { padding: 20px; background: #19191b; border: 1px solid var(--line); border-radius: 15px; box-shadow: var(--shadow); }
 .confirm-panel p { margin: 0; color: #e6e6ea; font-size: 14px; line-height: 1.5; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
@@ -437,6 +466,7 @@ button { -webkit-tap-highlight-color: transparent; }
   .welcome p { font-size: 13px; }
   .composer-wrap { padding: 8px 12px 12px; }
   .clear-doc { font-size: 11px; }
+  .auth-user-label { max-width: 95px; }
   .message { gap: 9px; font-size: 13px; }
   .message.assistant .message-content .generated-image { max-height: 55vh; }
 }
@@ -547,6 +577,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .history-actions { opacity: 1; }
   .icon-btn, .send-btn { width: 33px; height: 33px; flex-basis: 33px; border-radius: 11px; }
   .composer-hint { font-size: 9px; }
+  .auth-user-label { display: none; }
   .message.user .message-body { max-width: 92%; }
   .message-action { width: 34px; height: 34px; }
 }

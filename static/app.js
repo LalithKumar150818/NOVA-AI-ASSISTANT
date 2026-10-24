@@ -20,12 +20,27 @@ const appShell = document.querySelector(".app-shell");
 const mobileHistoryBtn = document.getElementById("mobileHistoryBtn");
 const closeHistoryBtn = document.getElementById("closeHistoryBtn");
 const historyBackdrop = document.getElementById("historyBackdrop");
+const authDialog = document.getElementById("authDialog");
+const authForm = document.getElementById("authForm");
+const authEmail = document.getElementById("authEmail");
+const authPassword = document.getElementById("authPassword");
+const authMessage = document.getElementById("authMessage");
+const authTitle = document.getElementById("authTitle");
+const authDescription = document.getElementById("authDescription");
+const authSubmitBtn = document.getElementById("authSubmitBtn");
+const authModeToggle = document.getElementById("authModeToggle");
 const STORAGE_KEY = "nova-ai-chats-v1";
 const IMAGE_DATABASE = "nova-ai-generated-images-v1";
 const MAX_SAVED_CHATS = 30;
-let chats = loadChats();
+let localChats = loadChats();
+let chats = localChats;
 let activeChatId = null;
 let busy = false;
+let authEnabled = false;
+let authenticatedUser = null;
+let csrfToken = "";
+let authReady = false;
+let authMode = "login";
 let editingMessageIndex = null;
 let editingChatId = null;
 let confirmationResolver = null;
@@ -55,6 +70,11 @@ function loadChats() {
 function saveChats() {
   chats.sort((a, b) => b.updatedAt - a.updatedAt);
   chats = chats.slice(0, MAX_SAVED_CHATS);
+  if (authenticatedUser) {
+    renderHistory();
+    return;
+  }
+  localChats = chats;
   try {
     const savedChats = chats.map(chat => ({
       ...chat,
@@ -66,6 +86,37 @@ function saveChats() {
     showFileStatus("Chat history could not be saved in this browser.", true);
   }
   renderHistory();
+}
+
+async function apiRequest(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+  const response = await fetch(url, {...options, headers});
+  const data = await readJsonResponse(response);
+  if (!response.ok) throw new Error(data.error || `Request failed (HTTP ${response.status}).`);
+  return data;
+}
+
+function serverConversation(chat) {
+  return Boolean(authenticatedUser && chat && chat.serverBacked);
+}
+
+async function persistServerChat(chat) {
+  if (!serverConversation(chat)) return;
+  await apiRequest(`/api/conversations/${encodeURIComponent(chat.id)}/messages`, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      title: chat.title,
+      messages: chat.messages.map(message => ({
+        role: message.role,
+        content: message.content,
+        ...(Array.isArray(message.sources) ? {sources: message.sources} : {}),
+        ...(Array.isArray(message.images) ? {images: message.images} : {})
+      }))
+    })
+  });
+  chat.updatedAt = Date.now();
 }
 
 function openImageDatabase() {
@@ -153,6 +204,33 @@ function activeChat() {
   return chats.find(chat => chat.id === activeChatId);
 }
 
+async function selectConversation(chat) {
+  if (busy) return;
+  cancelMessageEdit();
+  activeChatId = chat.id;
+  input.value = "";
+  renderMessages();
+  renderHistory();
+  setMobileHistoryOpen(false);
+  if (!serverConversation(chat) || chat.loaded) return;
+  showFileStatus("Loading your conversation…");
+  try {
+    const data = await apiRequest(`/api/conversations/${encodeURIComponent(chat.id)}`);
+    if (!data.conversation || !Array.isArray(data.conversation.messages)) {
+      throw new Error("The server returned an invalid conversation.");
+    }
+    chat.messages = data.conversation.messages;
+    chat.loaded = true;
+    const updatedAt = Date.parse(data.conversation.updated_at);
+    if (Number.isFinite(updatedAt)) chat.updatedAt = updatedAt;
+    showFileStatus("");
+    renderMessages();
+    renderHistory();
+  } catch (error) {
+    showFileStatus(error.message || "Could not load this conversation.", true);
+  }
+}
+
 function renderHistory() {
   historyList.replaceChildren();
   if (!chats.length) {
@@ -170,15 +248,7 @@ function renderHistory() {
     openButton.className = "history-item" + (chat.id === activeChatId ? " active" : "");
     openButton.textContent = chat.title;
     openButton.title = chat.title;
-    openButton.addEventListener("click", () => {
-      if (busy) return;
-      cancelMessageEdit();
-      activeChatId = chat.id;
-      input.value = "";
-      renderMessages();
-      renderHistory();
-      setMobileHistoryOpen(false);
-    });
+    openButton.addEventListener("click", () => selectConversation(chat));
     const actions = document.createElement("div");
     actions.className = "history-actions";
     const renameButton = document.createElement("button");
@@ -208,7 +278,7 @@ function renderHistory() {
       openButton.hidden = true;
       actions.hidden = true;
       row.appendChild(form);
-      form.addEventListener("submit", submitEvent => {
+      form.addEventListener("submit", async submitEvent => {
         submitEvent.preventDefault();
         const nextTitle = titleInput.value.trim();
         if (!nextTitle) {
@@ -216,9 +286,22 @@ function renderHistory() {
           titleInput.reportValidity();
           return;
         }
-        chat.title = nextTitle;
-        chat.updatedAt = Date.now();
-        saveChats();
+        try {
+          if (serverConversation(chat)) {
+            const data = await apiRequest(`/api/conversations/${encodeURIComponent(chat.id)}`, {
+              method: "PATCH",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({title: nextTitle})
+            });
+            chat.title = data.conversation.title;
+          } else {
+            chat.title = nextTitle;
+          }
+          chat.updatedAt = Date.now();
+          saveChats();
+        } catch (error) {
+          showFileStatus(error.message || "Could not rename this conversation.", true);
+        }
       });
       titleInput.focus();
       titleInput.select();
@@ -231,15 +314,22 @@ function renderHistory() {
     deleteButton.addEventListener("click", event => {
       event.stopPropagation();
       if (busy) return;
-      requestConfirmation(`Delete "${chat.title}" and its messages?`, "Delete").then(confirmed => {
+      requestConfirmation(`Delete "${chat.title}" and its messages?`, "Delete").then(async confirmed => {
         if (!confirmed) return;
-        chats = chats.filter(item => item.id !== chat.id);
-        if (activeChatId === chat.id) {
-          activeChatId = null;
-          cancelMessageEdit();
-          renderMessages();
+        try {
+          if (serverConversation(chat)) {
+            await apiRequest(`/api/conversations/${encodeURIComponent(chat.id)}`, {method: "DELETE"});
+          }
+          chats = chats.filter(item => item.id !== chat.id);
+          if (activeChatId === chat.id) {
+            activeChatId = null;
+            cancelMessageEdit();
+            renderMessages();
+          }
+          saveChats();
+        } catch (error) {
+          showFileStatus(error.message || "Could not delete this conversation.", true);
         }
-        saveChats();
       });
     });
     actions.append(renameButton, deleteButton);
@@ -785,7 +875,11 @@ function getComposerMaxHeight() {
 async function readJsonResponse(response) {
   const body = await response.text();
   try {
-    return JSON.parse(body);
+    const data = JSON.parse(body);
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("The server response must be a JSON object.");
+    }
+    return data;
   } catch {
     const status = response.status ? ` (HTTP ${response.status})` : "";
     throw new Error(`Nova's server returned an unexpected response${status}. Please try again.`);
@@ -802,10 +896,14 @@ async function readChatResponse(response, loading) {
   let buffer = "";
   let answer = "";
   let result = {};
+  let completed = false;
 
   function processEvent(line) {
     if (!line.startsWith("data: ")) return;
     const event = JSON.parse(line.slice(6));
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      throw new Error("Nova's server sent an invalid response event.");
+    }
     if (event.type === "delta" && typeof event.content === "string") {
       answer += event.content;
       const content = loading.querySelector(".message-content");
@@ -816,8 +914,11 @@ async function readChatResponse(response, loading) {
       }
     } else if (event.type === "done") {
       result = event;
+      completed = true;
     } else if (event.type === "error") {
       throw new Error(event.error || "The AI provider could not complete this request.");
+    } else {
+      throw new Error("Nova's server sent an unknown response event.");
     }
   }
 
@@ -834,16 +935,192 @@ async function readChatResponse(response, loading) {
   } finally {
     reader.releaseLock();
   }
+  if (!completed) throw new Error("Nova's response ended before the server confirmed completion.");
   return {...result, answer};
 }
 
+function showAuthMessage(text, isError = false) {
+  authMessage.textContent = text;
+  authMessage.hidden = !text;
+  authMessage.classList.toggle("is-error", isError);
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const registering = mode === "register";
+  authTitle.textContent = registering ? "Create your Nova account" : "Sign in to Nova";
+  authDescription.textContent = registering
+    ? "Create an account to save and sync your conversations."
+    : "Sign in to access your saved conversations.";
+  authSubmitBtn.textContent = registering ? "Create account" : "Sign in";
+  authModeToggle.textContent = registering ? "Already have an account? Sign in" : "Create an account";
+  authPassword.autocomplete = registering ? "new-password" : "current-password";
+  showAuthMessage("");
+}
+
+function updateAuthControls() {
+  const authButton = document.getElementById("authButton");
+  const logoutButton = document.getElementById("logoutButton");
+  const authUserLabel = document.getElementById("authUserLabel");
+  const setupNote = document.getElementById("authSetupNote");
+  const localHistoryNote = document.getElementById("localHistoryNote");
+  authButton.hidden = !authEnabled || Boolean(authenticatedUser);
+  logoutButton.hidden = !authenticatedUser;
+  authUserLabel.hidden = !authenticatedUser;
+  authUserLabel.textContent = authenticatedUser?.email || "Signed in";
+  setupNote.hidden = authEnabled;
+  localHistoryNote.textContent = authenticatedUser
+    ? "Synced cloud conversations"
+    : "Mini project · Browser-local chats";
+}
+
+async function loadServerConversations() {
+  const data = await apiRequest("/api/conversations");
+  if (!Array.isArray(data.conversations)) {
+    throw new Error("The server returned an invalid conversation list.");
+  }
+  return data.conversations
+    .filter(conversation =>
+      conversation && typeof conversation.id === "string" && typeof conversation.title === "string"
+    )
+    .slice(0, MAX_SAVED_CHATS)
+    .map(conversation => ({
+      id: conversation.id,
+      title: conversation.title,
+      updatedAt: Date.parse(conversation.updated_at) || Date.now(),
+      messages: [],
+      serverBacked: true,
+      loaded: false
+    }));
+}
+
+async function initializeAuthState() {
+  try {
+    const data = await apiRequest("/api/auth/status");
+    authEnabled = data.enabled === true;
+    authenticatedUser = data.user && typeof data.user.id === "string"
+      ? {id: data.user.id, email: typeof data.user.email === "string" ? data.user.email : ""}
+      : null;
+    csrfToken = typeof data.csrf_token === "string" ? data.csrf_token : "";
+    if (authenticatedUser) {
+      try {
+        chats = await loadServerConversations();
+        activeChatId = chats[0]?.id || null;
+        if (chats[0]) await selectConversation(chats[0]);
+        else renderMessages();
+      } catch (error) {
+        chats = [];
+        activeChatId = null;
+        showFileStatus(`Signed in, but cloud chat history could not be loaded: ${error.message}`, true);
+        renderMessages();
+      }
+    } else {
+      chats = localChats;
+      activeChatId = null;
+      renderMessages();
+    }
+  } catch (error) {
+    authEnabled = false;
+    authenticatedUser = null;
+    chats = localChats;
+    activeChatId = null;
+    showFileStatus(`Account status could not be checked: ${error.message}`, true);
+    renderMessages();
+  } finally {
+    authReady = true;
+    updateAuthControls();
+    renderHistory();
+  }
+}
+
+document.getElementById("authButton").addEventListener("click", () => {
+  setAuthMode("login");
+  authDialog.showModal();
+  authEmail.focus();
+});
+document.getElementById("closeAuthBtn").addEventListener("click", () => authDialog.close());
+authModeToggle.addEventListener("click", () => {
+  setAuthMode(authMode === "login" ? "register" : "login");
+});
+authForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const endpoint = authMode === "register" ? "/api/auth/register" : "/api/auth/login";
+  authSubmitBtn.disabled = true;
+  showAuthMessage(authMode === "register" ? "Creating your account…" : "Signing in…");
+  try {
+    const data = await apiRequest(endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email: authEmail.value.trim(), password: authPassword.value})
+    });
+    if (typeof data.csrf_token === "string") csrfToken = data.csrf_token;
+    if (!data.user || typeof data.user.id !== "string") {
+      showAuthMessage(data.message || "Check your email to confirm your account.");
+      return;
+    }
+    authPassword.value = "";
+    authDialog.close();
+    await initializeAuthState();
+    showFileStatus(data.message || "Signed in.");
+  } catch (error) {
+    showAuthMessage(error.message || "Could not sign in.", true);
+  } finally {
+    authSubmitBtn.disabled = false;
+  }
+});
+document.getElementById("logoutButton").addEventListener("click", async () => {
+  try {
+    const data = await apiRequest("/api/auth/logout", {method: "POST"});
+    if (typeof data.csrf_token === "string") csrfToken = data.csrf_token;
+    authenticatedUser = null;
+    chats = localChats;
+    activeChatId = null;
+    updateAuthControls();
+    renderMessages();
+    renderHistory();
+    showFileStatus(data.message || "Signed out.");
+  } catch (error) {
+    showFileStatus(error.message || "Could not sign out.", true);
+    await initializeAuthState();
+  }
+});
+
 async function sendMessage(textOverride) {
   if (busy) return;
+  if (!authReady) {
+    showFileStatus("Nova is still connecting. Please try again in a moment.");
+    return;
+  }
   const message = (textOverride ?? input.value).trim();
   if (!message) return;
   const generateImage = isImageGenerationRequest(message);
 
   let chat = activeChat();
+  if (!chat && authenticatedUser) {
+    try {
+      const created = await apiRequest("/api/conversations", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({title: message.replace(/\s+/g, " ").slice(0, 80) || "New chat"})
+      });
+      if (!created.conversation || typeof created.conversation.id !== "string") {
+        throw new Error("The server did not return the new conversation.");
+      }
+      chat = {
+        id: created.conversation.id,
+        title: created.conversation.title,
+        updatedAt: Date.now(),
+        messages: [],
+        serverBacked: true,
+        loaded: true
+      };
+      chats.unshift(chat);
+      activeChatId = chat.id;
+    } catch (error) {
+      showFileStatus(error.message || "Could not start a cloud conversation.", true);
+      return;
+    }
+  }
   if (!chat) {
     chat = {
       id: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
@@ -899,6 +1176,7 @@ async function sendMessage(textOverride) {
     : null;
 
   try {
+    if (serverConversation(chat)) await persistServerChat(chat);
     const endpoint = generateImage ? "/api/generate-image" : "/api/chat";
     const body = generateImage
       ? {
@@ -910,7 +1188,10 @@ async function sendMessage(textOverride) {
       };
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken ? {"X-CSRF-Token": csrfToken} : {})
+      },
       body: JSON.stringify(body)
     });
     const data = await readChatResponse(response, loading);
@@ -936,6 +1217,13 @@ async function sendMessage(textOverride) {
     chat.messages.push(assistantMessage);
     chat.updatedAt = Date.now();
     saveChats();
+    if (serverConversation(chat)) {
+      try {
+        await persistServerChat(chat);
+      } catch (error) {
+        showFileStatus(`Answer is ready, but cloud history could not be saved: ${error.message}`, true);
+      }
+    }
     loading.remove();
     messages.appendChild(makeMessageElement(
       "assistant", answer, false, null, imageDataUrl, sources, images
@@ -1069,7 +1357,36 @@ capturePhotoBtn.addEventListener("click", async () => {
 async function analyzePhoto(image, prompt) {
   if (busy) return;
   const userText = `📷 Photo question: ${prompt}`;
+  if (!authReady) {
+    showFileStatus("Nova is still connecting. Please try again in a moment.");
+    return;
+  }
   let chat = activeChat();
+  if (!chat && authenticatedUser) {
+    try {
+      const created = await apiRequest("/api/conversations", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({title: userText.replace(/\s+/g, " ").slice(0, 80)})
+      });
+      if (!created.conversation || typeof created.conversation.id !== "string") {
+        throw new Error("The server did not return the new conversation.");
+      }
+      chat = {
+        id: created.conversation.id,
+        title: created.conversation.title,
+        updatedAt: Date.now(),
+        messages: [],
+        serverBacked: true,
+        loaded: true
+      };
+      chats.unshift(chat);
+      activeChatId = chat.id;
+    } catch (error) {
+      showFileStatus(error.message || "Could not start a cloud conversation.", true);
+      return;
+    }
+  }
   if (!chat) {
     chat = {
       id: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
@@ -1092,19 +1409,25 @@ async function analyzePhoto(image, prompt) {
   setBusy(true);
 
   try {
-    const response = await fetch("/api/analyze-image", {
+    if (serverConversation(chat)) await persistServerChat(chat);
+    const data = await apiRequest("/api/analyze-image", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({image, prompt})
     });
-    const data = await readJsonResponse(response);
-    if (!response.ok) throw new Error(data.error || "Gemini could not analyze the photo.");
     const answer = typeof data.answer === "string" && data.answer.trim()
       ? stripWrappingQuotes(data.answer)
       : "Gemini could not generate a response. Please try again.";
     chat.messages.push({role: "assistant", content: answer});
     chat.updatedAt = Date.now();
     saveChats();
+    if (serverConversation(chat)) {
+      try {
+        await persistServerChat(chat);
+      } catch (error) {
+        showFileStatus(`Photo answer is ready, but cloud history could not be saved: ${error.message}`, true);
+      }
+    }
     loading.remove();
     messages.appendChild(makeMessageElement("assistant", answer));
   } catch (error) {
@@ -1123,9 +1446,7 @@ fileInput.addEventListener("change", async () => {
   const form = new FormData();
   form.append("file", file);
   try {
-    const response = await fetch("/api/upload", {method: "POST", body: form});
-    const data = await readJsonResponse(response);
-    if (!response.ok) throw new Error(data.error || "Upload failed.");
+    const data = await apiRequest("/api/upload", {method: "POST", body: form});
     showFileStatus(data.message + (data.image
       ? " Nova can analyze it or use it as visual guidance for an image request."
       : " Ask Nova a question about it."));
@@ -1138,9 +1459,7 @@ fileInput.addEventListener("change", async () => {
 
 document.getElementById("clearDocBtn").addEventListener("click", async () => {
   try {
-    const response = await fetch("/api/clear-document", {method: "POST"});
-    const data = await readJsonResponse(response);
-    if (!response.ok) throw new Error(data.error || "Could not clear the document.");
+    const data = await apiRequest("/api/clear-document", {method: "POST"});
     showFileStatus(data.message || "Document context cleared.");
   } catch (error) {
     showFileStatus(error.message || "Could not clear document context.", true);
@@ -1181,5 +1500,4 @@ if (!SpeechRecognition) {
   recognition.onend = () => voiceBtn.classList.remove("recording");
 }
 
-renderHistory();
-renderMessages();
+initializeAuthState();

@@ -3,7 +3,7 @@
 A Flask-based AI assistant with context-aware chat, automatic web and image search, Gemini image generation from text prompts and optional reference photos, image analysis, voice input and optional read-aloud responses, and document upload for TXT, PDF, DOCX, JPG, PNG, and WebP files.
 
 ## Features
-- Responsive dark desktop and mobile chat interface with multi-turn conversations and recent chats saved in the current browser
+- Responsive dark desktop and mobile chat interface with multi-turn conversations and browser-local history for guests; sign-in enables private cloud history
 - Responsive recent-chat sidebar that becomes a left-sliding drawer on phones and tablets, with close button, outside-click backdrop, Escape-key support, and chat selection
 - Start, reopen, rename, and delete conversations; edit an earlier user message to replace its following responses
 - Generated images and image references are stored in browser IndexedDB and chat metadata in local storage
@@ -23,6 +23,7 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
 - Upload JPG, PNG, and WebP images and ask Gemini questions about their contents
 - Clear uploaded document context
 - API key loaded from `.env`, never exposed in frontend JavaScript or hard-coded in the app
+- Optional Supabase Auth accounts with encrypted server-session tokens and per-user conversations/messages protected by PostgreSQL row-level security
 
 ## Technology
 - Python + Flask: backend and API routes
@@ -39,6 +40,7 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
 - Internet connection for Groq API calls
 - A Groq API key for text chat: https://console.groq.com/keys
 - A Gemini API key for photo analysis and image generation: https://aistudio.google.com/apikey
+- A Supabase project for account registration, sign-in, and cloud chat history (optional; see Supabase setup below)
 
 ## Windows setup in VS Code (PowerShell)
 
@@ -77,7 +79,9 @@ A Flask-based AI assistant with context-aware chat, automatic web and image sear
    Copy-Item .env.example .env
    ```
 
-8. Open `.env` and add your Groq key as `GROQ_API_KEY` and your Gemini key as `GEMINI_API_KEY`. Do not share or commit these keys. Text chat uses the configured Groq model (default `openai/gpt-oss-120b`); photo analysis uses `gemini-3.8-flash`; image generation defaults to `gemini-3.1-flash-lite-image`, Google's fastest image-generation option. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable for your account.
+8. Open `.env` and add your Groq key as `GROQ_API_KEY` and Gemini key as `GEMINI_API_KEY`. Set a unique `FLASK_SECRET_KEY`. Do not share or commit these values. Text chat uses the configured Groq model (default `openai/gpt-oss-120b`); photo analysis uses `gemini-3.8-flash`; image generation defaults to `gemini-3.1-flash-lite-image`. Update `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` if a configured model is unavailable to your account.
+
+   For cloud accounts, also set `SUPABASE_URL` and `SUPABASE_ANON_KEY` as described in [Supabase setup](#supabase-setup). Without these, the app clearly indicates that sign-in is unavailable and keeps guest history in the current browser.
 
 9. Start the app:
 
@@ -115,25 +119,34 @@ From the `ai_assistant_mini_project` folder with the virtual environment activat
 python -m unittest discover -s tests -v
 ```
 
-The search behavior is automatic and heuristic: Nova uses web search for time-sensitive wording and image search for explicit requests to see or find pictures. Stable questions use the configured AI model's knowledge. Search provider failures do not prevent a regular AI response; the interface displays a warning when live results could not be fetched.
+The tests cover search selection, provider responses, image/file features, authentication, encrypted token handling, CSRF protection, and user-scoped conversation routes. Live Supabase integration must be verified against a configured Supabase project.
 
 ## Mobile sidebar
-At widths up to 880px, tap the menu icon beside the Nova header to slide in Recent Chats from the left. Choose a saved conversation or use **New chat** to close the drawer and return to the conversation. Close it with the close icon, by tapping the shaded area outside the sidebar, or with Escape. At wider desktop widths, the sidebar remains visible beside the chat. Chat history is stored in the current browser.
+At widths up to 880px, tap the menu icon beside the Nova header to slide in Recent Chats from the left. Choose a saved conversation or use **New chat** to close the drawer and return to the conversation. Close it with the close icon, by tapping the shaded area outside the sidebar, or with Escape. At wider desktop widths, the sidebar remains visible beside the chat. Guest history is browser-local; sign in to sync conversation text and source metadata across devices.
 
-Chat history is saved locally in the browser and is not shared across browsers or devices. This lets a user reopen chats on the same phone/browser; sharing history between a phone and a computer requires user accounts and a server-side database, neither of which this demo currently has. Generated images and reference photos used in chat history are stored separately in browser IndexedDB to avoid filling the smaller local-storage quota, without delaying the first display of generated images. Image-generation time still depends on Gemini service load, network, and account limits; this project defaults to Google's fastest listed image model but cannot guarantee provider latency. Explicit English image-creation prompts are detected by the web interface and sent to Gemini; ordinary prompts use Groq. Captured and uploaded photos are sent to Gemini for analysis and are held in the app's in-memory demo document store until cleared or the server restarts. An uploaded photo is also supplied as visual guidance to the image-generation API. Groq text responses stream progressively in the web UI; non-streaming API clients retain the JSON response format. Web and image searches use DuckDuckGo and Wikimedia Commons, respectively, and run concurrently when both are requested. Search excerpts are reference material, not guaranteed fact-checking. Search results depend on upstream availability and may be incomplete or out of date. Nova's response quality depends on the configured AI models and provider limits; this project does not run or include ChatGPT, Claude, or Gemini chat models, and cannot guarantee equivalent capabilities.
+Guest chat history stays in the current browser. Signed-in conversations and messages are stored in Supabase and protected by per-user row-level security, so users can access their history on other devices. Generated image files and image references remain in the current browser's IndexedDB; document and image uploads are held in server process memory and are not durable across restarts. Do not upload confidential documents or photos. Explicit image-creation prompts are detected by the web interface and sent to Gemini; ordinary prompts use Groq. Groq text responses stream progressively. Web and image searches use DuckDuckGo and Wikimedia Commons, respectively. Search excerpts are reference material, not guaranteed fact-checking; results depend on upstream availability and may be incomplete or out of date.
 
 ## Deploying
 
-Deploy the `ai_assistant_mini_project` folder as a Python web service on a host that supports Flask and Gunicorn (for example, Render):
+Deploy the project folder as a Python web service on Render. The included `render.yaml` configures Gunicorn, a health check, and the required secret environment variables:
 
-1. Set the project root to `ai_assistant_mini_project`.
-2. Use `pip install -r requirements.txt` as the build command.
-3. Use `gunicorn app:app` as the start command.
-4. Configure `GROQ_API_KEY`, `GEMINI_API_KEY`, and a unique `FLASK_SECRET_KEY` as private environment variables. Set `GROQ_MODEL`, `GEMINI_MODEL`, or `GEMINI_IMAGE_MODEL` only if you need to use a different model. Do not put secrets in source code or commit `.env`.
-5. Enable HTTPS on the host. Browser camera and microphone access require localhost or a secure (HTTPS) origin.
-6. Redeploy/restart the service after uploading or pushing the updated project files. For a Git-based deployment, push the updated source to the configured branch and trigger the host's deployment; for a ZIP/manual deployment, upload the updated project folder and restart the web service.
+1. Push this project folder to a GitHub repository and create a Render Web Service from it, or use **New + → Blueprint** to apply `render.yaml`.
+2. Use `pip install -r requirements.txt` as the build command and `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 360 app:app` as the start command if configuring the service manually. Binding to Render's assigned port is required. A single worker keeps the existing in-memory upload context consistent; cloud conversations are stored in Supabase.
+3. In Render's Environment settings, add `GROQ_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY`. Set `FLASK_SECRET_KEY` to a long random value if Render did not generate it from the Blueprint. Configure the model variables only when you need a non-default model. Never add a service-role key.
+4. Run the database setup SQL in [Supabase setup](#supabase-setup) before enabling accounts.
+5. Keep HTTPS enabled. Render provides HTTPS; camera and microphone access require localhost or a secure origin.
+6. Redeploy after changing source or environment settings.
 
-Generate a secret locally with `python -c "import secrets; print(secrets.token_hex(32))"` and add the result as `FLASK_SECRET_KEY` in the host settings. Never use the example secret in a public deployment. The included Gunicorn command runs without Flask's development server or debugger. This demo stores conversations in each visitor's browser, not on the server; hosting it does not synchronize chat history across devices.
+Generate a secret locally with `python -c "import secrets; print(secrets.token_hex(32))"` if needed. Production startup fails when `FLASK_SECRET_KEY` is missing. This app uses the Supabase anonymous/publishable key with each user's access token and database RLS; it does not require or accept a service-role key.
+
+## Supabase setup
+1. Create a Supabase project and open **SQL Editor → New query**.
+2. Copy and run [`supabase/schema.sql`](./supabase/schema.sql). This creates `profiles`, `conversations`, and `messages`, installs profile synchronization for Supabase Auth users, enables RLS, and creates an owner-scoped transactional function used to save edited chat histories.
+3. In **Project Settings → API**, copy the Project URL and the **publishable key** (or legacy `anon` key). Set them as `SUPABASE_URL` and `SUPABASE_ANON_KEY` in local `.env` and Render's private environment settings. Do not use `service_role` or secret keys.
+4. Configure Supabase Auth email confirmation and allowed redirect URLs for your deployed site as appropriate. With email confirmation enabled, users confirm registration before signing in.
+5. Restart locally or redeploy on Render. The top bar then shows the sign-in action. Sign-in becomes available when both environment variables are configured. Apply the SQL schema before using cloud conversation history; if the schema is missing, history operations will return a setup error.
+
+Passwords are submitted directly to Supabase Auth over HTTPS; the app does not store password hashes or plaintext passwords. Supabase Auth manages password hashing. Access/refresh tokens are encrypted in the signed, HttpOnly Flask session cookie and are never returned to browser JavaScript. PostgreSQL queries use the user's JWT and RLS rather than a service-role credential.
 
 ## Voice input language
 In `static/app.js`, change:
@@ -151,7 +164,7 @@ Voice features are browser-dependent. The app uses speech recognition to convert
 - Supported: `.txt`, `.pdf`, `.docx`, `.jpg`, `.jpeg`, `.png`, `.webp`
 - Uploaded images are limited to 7 MB and are analyzed by Gemini; image-generation reference photos have the same limit. Document uploads are limited by the 10 MB total request size.
 - Image-only/scanned PDFs are not OCR-processed in this starter project.
-- The app extracts up to 15,000 characters for document context to limit prompt size.
+- The app extracts up to 25,000 characters for document context to limit prompt size.
 - The extracted document text is sent to the AI provider when you ask a question. Do not upload confidential documents.
 
 ## Automatic web search
@@ -173,4 +186,4 @@ Search results are evaluated as excerpts and shown below the answer as clickable
 - Port 5000 is busy: stop the other Flask app or change the port in `app.py`.
 
 ## Important
-This is a learning/demo project, not a production-ready public service. Before deploying publicly, add authentication, rate limiting, stronger session management, secure hosting, and privacy controls. Do not expose `.env` or your API key.
+This is a learning/demo project and is not a production-ready public service. Optional Supabase authentication and per-user row-level security are available when configured, but the app does not include rate limiting or comprehensive abuse monitoring. Before a public launch, add those protections and review hosting, privacy, retention, and incident-response requirements. Do not expose `.env` or API keys.
